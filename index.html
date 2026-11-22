@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ASCII Christmas Tree · 手势圣诞树</title>
+<style>
+  html,body{margin:0;height:100%;background:#05070a;overflow:hidden;color:#cfd8dc;
+    font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+  canvas{display:block}
+  #start{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    gap:18px;background:rgba(5,7,10,.82);z-index:10;text-align:center;padding:20px}
+  #start h1{font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:400;letter-spacing:.25em;
+    color:#9be7a8;margin:0;font-size:26px}
+  #start p{margin:0;opacity:.7;font-size:14px;line-height:1.7}
+  button{font:inherit;padding:10px 28px;border-radius:999px;border:1px solid #9be7a8;background:transparent;
+    color:#9be7a8;cursor:pointer;font-size:15px}
+  button:hover{background:#9be7a822}
+  #guide{position:fixed;right:16px;top:16px;font-size:12px;line-height:1.8;text-align:right;
+    font-family:ui-monospace,Menlo,Consolas,monospace;pointer-events:none}
+  #guide div{opacity:.35;transition:opacity .3s,color .3s}
+  #guide div.on{opacity:1;color:#ffe08a}
+  #status{position:fixed;right:16px;bottom:16px;font-size:12px;opacity:.65;
+    font-family:ui-monospace,Menlo,Consolas,monospace;pointer-events:none;text-align:right}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="start">
+  <h1>ASCII · XMAS · TREE</h1>
+  <p>对着摄像头做手势，让字符长成一棵圣诞树<br>没有摄像头也可以按键盘 0–5 体验</p>
+  <button id="go">开始 ▶</button>
+</div>
+
+<div id="guide">
+  <div data-s="0">✊ 握拳 · 重置</div>
+  <div data-s="1">🖐 张开手掌 · 长出圣诞树</div>
+  <div data-s="2">☝️ 竖食指 · 点亮星星</div>
+  <div data-s="3">✌️ 比耶 · 挂上彩灯</div>
+  <div data-s="4">🙌 双手张开 · 礼物</div>
+  <div data-s="5">🫶 双手比心 · 驯鹿</div>
+</div>
+<div id="status">按「开始」启用摄像头</div>
+
+<video id="cam" playsinline muted style="display:none"></video>
+
+<script type="module">
+/* ================= 基础设置 ================= */
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+const statusEl = document.getElementById('status');
+let W, H, DPR;
+function resize() {
+  DPR = Math.min(devicePixelRatio || 1, 2);
+  W = innerWidth; H = innerHeight;
+  cv.width = W * DPR; cv.height = H * DPR;
+  cv.style.width = W + 'px'; cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+addEventListener('resize', resize); resize();
+
+const rand = (a, b) => a + Math.random() * (b - a);
+const pick = arr => arr[Math.random() * arr.length | 0];
+const TREE_CH = '#*+%=@&$x'.split('');
+const GROUND_CH = '.:-~_'.split('');
+
+/* ================= 粒子 =================
+   每个粒子有两个位置：home（散落在地面）和 form（组成造型的位置）。
+   active=true 时飞向 form，否则回到 home。 */
+const P = [];
+function groundPos() {
+  const a = rand(0, Math.PI * 2), r = Math.sqrt(Math.random()) * 0.8;
+  return { x: Math.cos(a) * r, y: -0.64 + rand(-0.012, 0.012), z: Math.sin(a) * r * 0.9 };
+}
+function add(kind, form, opts = {}) {
+  const g = groundPos();
+  P.push({
+    kind, fx: form.x, fy: form.y, fz: form.z,
+    hx: g.x, hy: g.y, hz: g.z, x: g.x, y: g.y, z: g.z,
+    ch: pick(TREE_CH), gch: pick(GROUND_CH), bill: false,
+    active: false, delay: 0, tw: rand(0, 6.28), ...opts
+  });
+}
+
+// —— 树身：分层的圆锥 ——
+for (let i = 0; i < 2400; i++) {
+  const h = 1 - Math.sqrt(Math.random());          // 底部更密
+  const tier = (h * 4.3) % 1;                       // 4 层“裙边”
+  const maxR = 0.44 * (1 - h) * (0.58 + 0.42 * (1 - tier)) + 0.012;
+  const r = maxR * (0.72 + 0.28 * Math.sqrt(Math.random()));
+  const phi = rand(0, Math.PI * 2);
+  const band = (h * 6 + phi / (Math.PI * 2)) % 1;   // 螺旋彩灯带
+  add('tree', { x: Math.cos(phi) * r, y: -0.5 + h * 1.04, z: Math.sin(phi) * r }, {
+    h, phi, light: band < 0.13, orn: Math.random() < 0.035,
+    ornCol: pick(['#ff5252', '#ffd54f', '#ff8a80']),
+    hue: rand(118, 150), lit: rand(26, 50)
+  });
+}
+// —— 树干 ——
+for (let i = 0; i < 90; i++) {
+  const phi = rand(0, 6.28), r = rand(0, 0.05);
+  add('trunk', { x: Math.cos(phi) * r, y: rand(-0.62, -0.5), z: Math.sin(phi) * r }, { h: 0, ch: pick(['|', '#', 'H']) });
+}
+
+// —— 星星：五角星（始终正对屏幕）——
+const STAR_Y = 0.6, SO = 0.075, SI = 0.032;
+const starPoly = [];
+for (let i = 0; i < 10; i++) {
+  const a = -Math.PI / 2 + i * Math.PI / 5, r = i % 2 ? SI : SO;
+  starPoly.push([Math.cos(a) * r, Math.sin(a) * r]);
+}
+function inPoly(x, y, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i], [xj, yj] = poly[j];
+    if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+let sc = 0;
+while (sc < 170) {
+  const x = rand(-SO, SO), y = rand(-SO, SO);
+  if (inPoly(x, y, starPoly)) { add('star', { x, y: STAR_Y - y, z: 0 }, { bill: true, ch: pick(['*', '+', '#']) }); sc++; }
+}
+for (let i = 0; i < 60; i++) {                       // 十字光芒
+  const dir = i % 4, d = rand(0.08, 0.16);
+  const dx = [d, -d, 0, 0][dir], dy = [0, 0, d, -d][dir];
+  add('star', { x: dx, y: STAR_Y + dy, z: 0 }, { bill: true, ch: '.', ray: true });
+}
+
+// —— 礼物盒 ——
+const GIFTS = [
+  { x: -0.4, w: 0.17, h: 0.13, c: '#e53935' },
+  { x: -0.15, w: 0.12, h: 0.17, c: '#1e88e5' },
+  { x: 0.2, w: 0.19, h: 0.11, c: '#43a047' },
+  { x: 0.43, w: 0.11, h: 0.14, c: '#8e24aa' },
+];
+for (const g of GIFTS) {
+  const n = Math.round(g.w * g.h * 9000), base = -0.64;
+  for (let i = 0; i < n; i++) {
+    const px = g.x + rand(-g.w / 2, g.w / 2), py = base + rand(0, g.h);
+    const ribbon = Math.abs(px - g.x) < 0.012 || Math.abs(py - (base + g.h * 0.55)) < 0.01;
+    add('gift', { x: px, y: py, z: -0.5 }, { bill: true, col: ribbon ? '#ffe082' : g.c, ch: ribbon ? '=' : pick(['#', '%', '&']) });
+  }
+  for (let i = 0; i < 14; i++) {                     // 蝴蝶结
+    const a = rand(0, 6.28), r = rand(0, 0.025);
+    add('gift', { x: g.x + Math.cos(a) * r * 1.6, y: base + g.h + Math.abs(Math.sin(a)) * r, z: -0.5 }, { bill: true, col: '#ffe082', ch: '@' });
+  }
+}
+
+// —— 驯鹿（像素图，# = 有字符）——
+const DEER = [
+  "  #   #              ",
+  " # # # #             ",
+  "  ## ##              ",
+  "   ###               ",
+  "  #####              ",
+  " ## ####             ",
+  "     ###             ",
+  "      ############   ",
+  "      ############## ",
+  "       ############ #",
+  "       ###########   ",
+  "       ##       ##   ",
+  "       ##       ##   ",
+  "       # #      # #  ",
+  "       #  #     #  # ",
+];
+const CELL = 0.024, DW = DEER[0].length * CELL, DH = DEER.length * CELL, DEER_CY = -0.2;
+DEER.forEach((row, r) => [...row].forEach((c, k) => {
+  if (c !== '#') return;
+  for (let s = 0; s < 4; s++) {
+    add('deer', { x: -DW / 2 + (k + (s % 2) / 2 + 0.25) * CELL, y: DEER_CY + DH / 2 - (r + (s >> 1) / 2 + 0.25) * CELL, z: -0.45 },
+      { bill: true, ch: pick(['#', '@', '%']) });
+  }
+}));
+
+// —— 雪花（屏幕坐标）——
+const SNOW = Array.from({ length: 220 }, () => ({ x: Math.random(), y: Math.random(), v: rand(0.0005, 0.0018), s: rand(0, 6.28) }));
+
+/* ================= 阶段 ================= */
+const NEED = { tree: 1, trunk: 1, star: 2, gift: 4, deer: 5 };
+let stage = -1;
+function setStage(s) {
+  if (s === stage) return;
+  stage = s;
+  for (const p of P) {
+    const on = s >= NEED[p.kind];
+    if (on !== p.active) {
+      p.active = on;
+      p.delay = on ? (p.kind === 'tree' || p.kind === 'trunk' ? p.h * 70 + rand(0, 18) : rand(0, 35)) : rand(0, 40);
+    }
+  }
+  document.querySelectorAll('#guide div').forEach(d => d.classList.toggle('on', +d.dataset.s <= s && (s > 0 || +d.dataset.s === 0)));
+}
+setStage(0);
+addEventListener('keydown', e => { if (e.key >= '0' && e.key <= '5') setStage(+e.key); });
+
+/* ================= 手势识别（MediaPipe Hand Landmarker）================= */
+const video = document.getElementById('cam');
+let landmarker = null, hands = [], lastVT = -1;
+let cand = null, candN = 0, lastGesture = '';
+
+document.getElementById('go').onclick = async () => {
+  document.getElementById('start').style.display = 'none';
+  statusEl.textContent = '正在加载手势模型…';
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: 640, height: 480 } });
+    video.srcObject = stream; await video.play();
+    const V = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
+    const { FilesetResolver, HandLandmarker } = await import(V + '/vision_bundle.mjs');
+    const fileset = await FilesetResolver.forVisionTasks(V + '/wasm');
+    landmarker = await HandLandmarker.createFromOptions(fileset, {
+      baseOptions: {
+        modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+        delegate: 'GPU'
+      },
+      runningMode: 'VIDEO', numHands: 2
+    });
+    statusEl.textContent = '准备好了，举起手吧 🖐';
+  } catch (err) {
+    console.error(err);
+    statusEl.textContent = '摄像头或模型不可用：可按键盘 0–5 体验';
+  }
+};
+
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+function fingersUp(lm) {        // 食指、中指、无名指、小指是否伸直
+  const w = lm[0];
+  return [[8, 6], [12, 10], [16, 14], [20, 18]].map(([t, p]) => dist(lm[t], w) > dist(lm[p], w) * 1.15);
+}
+function classify(hs) {
+  if (!hs.length) return null;
+  if (hs.length === 2) {
+    const [a, b] = hs, size = (dist(a[0], a[9]) + dist(b[0], b[9])) / 2;
+    if (dist(a[8], b[8]) < size * 0.55 && dist(a[4], b[4]) < size * 0.55) return 'heart';
+    if (fingersUp(a).every(Boolean) && fingersUp(b).every(Boolean)) return 'twoOpen';
+  }
+  for (const h of hs) {
+    const e = fingersUp(h), n = e.filter(Boolean).length;
+    if (n === 4) return 'open';
+    if (n === 0) return 'fist';
+    if (e[0] && e[1] && !e[2] && !e[3]) return 'two';
+    if (e[0] && !e[1] && !e[2] && !e[3]) return 'one';
+  }
+  return null;
+}
+const G2S = { fist: 0, open: 1, one: 2, two: 3, twoOpen: 4, heart: 5 };
+const GNAME = { fist: '握拳', open: '张开手掌', one: '竖食指', two: '比耶', twoOpen: '双手张开', heart: '比心' };
+function handleGesture(g) {
+  if (g === cand) candN++; else { cand = g; candN = 1; }
+  const need = g === 'fist' ? 20 : 8;                 // 防抖：手势需保持几帧
+  if (!g || candN !== need) return;
+  lastGesture = g;
+  setStage(g === 'fist' ? 0 : Math.max(stage, G2S[g]));
+  statusEl.textContent = '识别到：' + GNAME[g];
+}
+
+/* ================= 渲染 ================= */
+const BONES = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],
+  [9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
+
+function drawCam() {
+  if (!video.videoWidth) return;
+  const pw = Math.min(230, W * 0.34), ph = pw * video.videoHeight / video.videoWidth, x0 = 16, y0 = 16;
+  ctx.save();
+  ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x0, y0, pw, ph, 12) : ctx.rect(x0, y0, pw, ph); ctx.clip();
+  ctx.globalAlpha = 0.85;
+  ctx.translate(x0 + pw, y0); ctx.scale(-1, 1);       // 镜像
+  ctx.drawImage(video, 0, 0, pw, ph);
+  ctx.restore();
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.fillStyle = '#fff'; ctx.lineWidth = 1.2;
+  for (const lm of hands) {
+    const pt = i => [x0 + (1 - lm[i].x) * pw, y0 + lm[i].y * ph];
+    ctx.beginPath();
+    for (const [a, b] of BONES) { const A = pt(a), B = pt(b); ctx.moveTo(...A); ctx.lineTo(...B); }
+    ctx.stroke();
+    for (let i = 0; i < 21; i++) { const [x, y] = pt(i); ctx.beginPath(); ctx.arc(x, y, 2, 0, 6.28); ctx.fill(); }
+  }
+  ctx.restore();
+}
+
+function frame(now) {
+  // 1) 手势
+  if (landmarker && video.readyState >= 2 && video.currentTime !== lastVT) {
+    lastVT = video.currentTime;
+    hands = landmarker.detectForVideo(video, now).landmarks || [];
+    handleGesture(classify(hands));
+  }
+
+  // 2) 背景 + 雪
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1; ctx.fillStyle = '#05070a'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#fff';
+  for (const s of SNOW) {
+    s.y += s.v; s.s += 0.01; if (s.y > 1) { s.y = 0; s.x = Math.random(); }
+    ctx.globalAlpha = 0.25 + 0.25 * Math.sin(s.s * 3);
+    ctx.fillRect((s.x + Math.sin(s.s) * 0.01) * W, s.y * H, 1.4, 1.4);
+  }
+
+  // 3) 粒子
+  const t = now * 0.001, rot = t * 0.35, cs = Math.cos(rot), sn = Math.sin(rot);
+  const S = Math.min(W * 0.95, H * 0.58), cx = W / 2, cy = H * 0.5;
+  const fs = Math.max(8, Math.round(S / 55));
+  ctx.font = `${fs}px ui-monospace,Menlo,Consolas,monospace`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+
+  // 星星光晕
+  const starOn = P.some(p => p.kind === 'star' && p.active && Math.abs(p.y - p.fy) < 0.02);
+  if (stage >= 2 && starOn) {
+    const sx = cx, sy = cy - STAR_Y * S, R = S * 0.22 * (0.9 + 0.1 * Math.sin(t * 3));
+    const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, R);
+    g.addColorStop(0, 'rgba(255,214,120,.45)'); g.addColorStop(1, 'rgba(255,214,120,0)');
+    ctx.globalAlpha = 1; ctx.fillStyle = g; ctx.fillRect(sx - R, sy - R, 2 * R, 2 * R);
+  }
+
+  const deerOn = stage >= 5;
+  for (const p of P) {
+    if (p.delay > 0) p.delay--;
+    else {
+      const k = 0.055;
+      const tx = p.active ? p.fx : p.hx, ty = p.active ? p.fy : p.hy, tz = p.active ? p.fz : p.hz;
+      p.x += (tx - p.x) * k; p.y += (ty - p.y) * k; p.z += (tz - p.z) * k;
+    }
+    let xr = p.x, zr = p.z;
+    if (!p.bill) { xr = p.x * cs + p.z * sn; zr = -p.x * sn + p.z * cs; }
+    const f = 3 / (3 + zr);
+    const sx = cx + xr * S * f, sy = cy - p.y * S * f;
+    const depth = Math.min(1, Math.max(0, (0.6 - zr) / 1.2));
+    p.tw += 0.05;
+
+    let col, a, ch = p.ch;
+    if (!p.active) {                                   // 地面
+      col = '#8fa3ad'; a = 0.22 + 0.15 * depth; ch = p.gch;
+    } else if (p.kind === 'tree') {
+      if (stage >= 3 && p.light) {
+        col = `hsl(${(p.phi * 57 + p.h * 300 - t * 140) % 360 + 360},100%,62%)`; a = 0.95;
+      } else if (p.orn) {
+        col = p.ornCol; a = 0.6 + 0.4 * Math.sin(p.tw * 2);
+      } else {
+        col = `hsl(${p.hue},55%,${p.lit}%)`; a = 0.35 + 0.6 * depth;
+      }
+      // 驯鹿出现时，让它身后的树叶变暗，轮廓更清楚
+      if (deerOn && Math.abs(sx - cx) < DW * S * 0.62 && Math.abs(sy - (cy - DEER_CY * S)) < DH * S * 0.62) a *= 0.25;
+    } else if (p.kind === 'trunk') { col = '#8d6e63'; a = 0.8; }
+    else if (p.kind === 'star') { col = p.ray ? '#fff3c4' : '#ffd54f'; a = p.ray ? 0.4 + 0.4 * Math.sin(p.tw * 3) : 1; }
+    else if (p.kind === 'gift') { col = p.col; a = 0.95; }
+    else if (p.kind === 'deer') { col = '#ffffff'; a = 0.8 + 0.2 * Math.sin(p.tw); }
+
+    ctx.globalAlpha = Math.max(0, Math.min(1, a));
+    ctx.fillStyle = col;
+    ctx.fillText(ch, sx, sy);
+  }
+
+  // 4) 摄像头小窗 + 手部骨架
+  ctx.globalAlpha = 1;
+  drawCam();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
