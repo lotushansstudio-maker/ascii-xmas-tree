@@ -305,7 +305,7 @@ let hist = [], saltActive = false;
 function poseOf(h) {
   const size = dist(h[0], h[9]);
   const e = fingersUp(h), n = e.filter(Boolean).length;
-  const bunch = dist(h[4], h[8]) < size * 0.42 && dist(h[4], h[12]) < size * 0.55 && dist(h[8], h[0]) > dist(h[5], h[0]) * 1.15;
+  const bunch = dist(h[4], h[8]) < size * 0.5 && dist(h[4], h[12]) < size * 0.65 && dist(h[8], h[0]) > dist(h[5], h[0]) * 1.1;
   if (bunch) return 'bunch';
   if (n === 4) return 'open';
   if (n === 0) return 'fist';
@@ -334,13 +334,21 @@ function circleTurns() {                      // 食指尖绕中心转了几圈
   }
   return Math.abs(sum) / (2 * Math.PI);
 }
-function rubAmount() {                        // 拇指相对指尖来回搓的距离 + 手腕抖动
-  const H = hist.filter(p => p.pose === 'bunch');
-  if (H.length < 10 || H.length < hist.length * 0.6) return 0;
+function trailing(pose) {                     // 最近一段连续保持同一个姿势的帧
+  let k = hist.length;
+  while (k > 0 && hist[k - 1].pose === pose) k--;
+  return hist.slice(k);
+}
+function rubInfo() {                          // 返回 [连续捏合了多久(ms), 最近 0.6 秒拇指来回搓的距离]
+  const H = trailing('bunch');
+  if (H.length < 3) return [0, 0];
+  const now = H[H.length - 1].t;
   let path = 0;
-  for (let k = 1; k < H.length; k++)
+  for (let k = 1; k < H.length; k++) {
+    if (now - H[k].t > 600) continue;
     path += Math.hypot(H[k].rx - H[k - 1].rx, H[k].ry - H[k - 1].ry) + 0.4 * Math.hypot(H[k].wx - H[k - 1].wx, H[k].wy - H[k - 1].wy);
-  return path;
+  }
+  return [now - H[0].t, path];
 }
 const G2S = { fist: 0, open: 1, one: 2, circle: 3, two: 4, salt: 5 };
 const GNAME = { fist: '握拳', open: '张开手掌', one: '竖食指', circle: '食指画圈', two: '比耶', salt: '搓手指撒盐' };
@@ -358,9 +366,15 @@ function handleHands(hs, now) {
   const turns = pose === 'one' ? circleTurns() : 0;
   if (turns > 0.8) { fire('circle'); hist = []; return; }
   if (pose === 'one' && turns > 0.25 && stage >= 2 && stage < 3) statusEl.textContent = `食指画圈… ${Math.min(99, turns / 0.8 * 100 | 0)}%`;
-  const rub = pose === 'bunch' ? rubAmount() : 0;
-  if (rub > 0.75) { saltActive = true; if (stage < 5) fire('salt'); return; }
-  if (pose === 'bunch' && stage >= 4 && stage < 5) statusEl.textContent = `再搓一搓… ${Math.min(99, rub / 0.75 * 100 | 0)}%`;
+  if (pose === 'bunch') {
+    const [held, rub] = rubInfo();
+    // 搓一下（约 0.2 秒内有来回动作）或者捏住半秒，就算撒盐
+    if ((held > 150 && rub > 0.22) || held > 500) {
+      if (stage < 5) fire('salt');
+      saltActive = rub > 0.12 || held < 900;
+      return;
+    }
+  }
   // 静态手势：保持几帧才算
   const g = pose === 'bunch' ? null : pose;
   if (g === cand) candN++; else { cand = g; candN = 1; }
