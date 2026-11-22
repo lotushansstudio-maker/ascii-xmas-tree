@@ -197,24 +197,45 @@ const STRIDE = 12, NP = pts.length / STRIDE;
 const D = new Float32Array(pts); pts.length = 0;
 const RND = new Float32Array(NP).map(Math.random);
 
-/* ---------------- 驯鹿：线条画（朝右）---------------- */
-const DEER = [
-  [[0.30,0.56],[0.50,0.58],[0.72,0.58],[0.86,0.55],[0.93,0.48],[0.92,0.38],[0.85,0.32],[0.70,0.31],[0.50,0.31],[0.36,0.33],[0.28,0.40]],
-  [[0.28,0.40],[0.20,0.55],[0.14,0.70]],
-  [[0.30,0.56],[0.24,0.68],[0.21,0.79]],
-  [[0.14,0.70],[0.06,0.68],[0.01,0.70],[0.02,0.74],[0.12,0.80],[0.21,0.79]],
-  [[0.20,0.80],[0.28,0.84],[0.22,0.78]],
-  [[0.16,0.81],[0.18,0.92],[0.26,1.00],[0.34,1.06]],
-  [[0.18,0.92],[0.11,0.98]],
-  [[0.24,0.99],[0.24,1.09]],
-  [[0.13,0.81],[0.08,0.90],[0.05,1.02],[0.08,1.10]],
-  [[0.07,0.94],[0.00,0.98]],
-  [[0.36,0.33],[0.34,0.18],[0.36,0.00]],
-  [[0.44,0.31],[0.45,0.17],[0.42,0.00]],
-  [[0.78,0.31],[0.82,0.17],[0.79,0.00]],
-  [[0.88,0.35],[0.93,0.18],[0.91,0.00]],
-  [[0.93,0.48],[0.99,0.55]],
-].map(line => line.map(([x, y]) => [1 - x, y]));   // 镜像成朝右
+/* ---------------- 驯鹿：有关节的骨架，会原地踏步 ----------------
+   单位：驯鹿高度 = 1，原点在两前后腿中间的地面，朝右 */
+function deerShape(t) {
+  const ph = t * Math.PI * 2 * 0.9;                     // 步伐节奏
+  const bob = 0.014 * Math.sin(ph * 2);                 // 身体上下起伏
+  const nod = 0.02 * Math.sin(ph * 2 + 0.8);            // 点头
+  const lines = [];
+  const ln = (a, b, w = 1) => lines.push([a[0], a[1], b[0], b[1], w]);
+  const body = { x0: -0.27, x1: 0.21, y0: 0.42 + bob, y1: 0.6 + bob };
+  // 四条腿：[髋关节 x, 相位]，对角腿同步
+  for (const [hx, off, front] of [[0.15, 0, 1], [0.08, Math.PI, 1], [-0.17, Math.PI, 0], [-0.24, 0, 0]]) {
+    const sw = Math.sin(ph + off);
+    const thigh = 0.34 * sw;                            // 前后摆
+    const lift = Math.max(0, Math.cos(ph + off));       // 抬腿时弯膝
+    const hip = [hx, body.y0 + 0.02];
+    const knee = [hip[0] + Math.sin(thigh) * 0.2, hip[1] - Math.cos(thigh) * 0.2];
+    const a2 = thigh - (front ? 0.9 : 0.45) * lift;
+    const foot = [knee[0] + Math.sin(a2) * 0.21, knee[1] - Math.cos(a2) * 0.21];
+    ln(hip, knee); ln(knee, foot);
+  }
+  // 脖子、头、耳朵
+  const head = [0.27, 0.9 + bob + nod];
+  ln([0.13, body.y1 - 0.02], head, 2.2);
+  ln([head[0] - 0.02, head[1] + 0.02], [head[0] + 0.04, head[1] - 0.02], 2.2);
+  ln([head[0], head[1] - 0.01], [head[0] + 0.14, head[1] - 0.05], 1.5);   // 嘴
+  ln([head[0] - 0.03, head[1] + 0.03], [head[0] - 0.11, head[1] + 0.07]); // 耳朵
+  // 鹿角：两根主枝 + 分叉
+  const ab = [head[0] - 0.01, head[1] + 0.04];
+  const L1 = [ab[0] - 0.06, ab[1] + 0.22], L2 = [ab[0] + 0.07, ab[1] + 0.22];
+  ln(ab, L1); ln(ab, L2);
+  ln([ab[0] - 0.03, ab[1] + 0.1], [ab[0] - 0.11, ab[1] + 0.14]);
+  ln([ab[0] - 0.05, ab[1] + 0.17], [ab[0] - 0.1, ab[1] + 0.23]);
+  ln([ab[0] + 0.035, ab[1] + 0.1], [ab[0] + 0.12, ab[1] + 0.14]);
+  ln([ab[0] + 0.055, ab[1] + 0.17], [ab[0] + 0.11, ab[1] + 0.23]);
+  // 尾巴（会甩）
+  ln([body.x0, body.y1 - 0.02], [body.x0 - 0.07, body.y1 + 0.04 + 0.035 * Math.sin(ph * 3)]);
+  return { lines, body };
+}
+let DMARK = null;
 
 /* ---------------- 天空 / 雪 ---------------- */
 let SKY = [];
@@ -510,33 +531,63 @@ function frame(now) {
     }
   }
 
-  // —— 驯鹿：沿线条一笔一笔画出来 ——
+  // —— 驯鹿：和树一样的点状字符，身体是毛衣花纹，原地踏步 ——
   if (A.deer > 0) {
+    if (!DMARK || DMARK.length !== cols * rows) DMARK = new Uint8Array(cols * rows);
+    DMARK.fill(0);
     const [ay, az] = camYZ(-0.47, -0.5);
-    const ax = CX - 0.02 * F / az, ayS = CY - ay * F / az;
-    const dw = 0.44 * F / az, dh = dw * 0.95;
-    let budget = A.deer * 1.15 * DEER.reduce((s, l) => s + l.slice(1).reduce((q, p, k) => q + Math.hypot((p[0] - l[k][0]) * dw, (p[1] - l[k][1]) * dh), 0), 0);
-    const halo = [];
-    for (const line of DEER) for (let k = 1; k < line.length && budget > 0; k++) {
-      const x1 = ax + (line[k - 1][0] - 0.5) * dw, y1 = ayS - line[k - 1][1] * dh;
-      const x2 = ax + (line[k][0] - 0.5) * dw, y2 = ayS - line[k][1] * dh;
-      const len = Math.hypot(x2 - x1, y2 - y1);
-      let ang = Math.atan2(-(y2 - y1), x2 - x1) * 180 / Math.PI; ang = (ang + 180) % 180;
-      const ch = code(ang < 22 || ang > 158 ? '-' : ang < 68 ? '/' : ang < 112 ? '|' : '\\');
-      const steps = Math.ceil(len / (Math.min(cw, chh) * 0.5));
-      for (let j = 0; j <= steps && budget > 0; j++, budget -= len / steps) {
-        const c = (x1 + (x2 - x1) * j / steps) / cw | 0, r = (y1 + (y2 - y1) * j / steps) / chh | 0;
-        const tw = 0.78 + 0.22 * Math.sin(t * 4 + c * 0.7 + r * 1.3);
-        halo.push([c, r]);
-        put(c, r, ch, 255 * tw, 250 * tw, 238 * tw);
+    const Hd = 0.37 * F / az, ax = CX + 0.03 * F / az, ayS = CY - ay * F / az;
+    const { lines, body } = deerShape(t);
+    const list = [];
+    const mark = (c, r, type) => {
+      if (c < 0 || r < 0 || c >= cols || r >= rows) return;
+      const i = r * cols + c; if (DMARK[i]) return;
+      DMARK[i] = type; list.push(i);
+    };
+    // 线条：按像素采样，每个采样点盖住约 2 列 × 1 行
+    for (const [x1, y1, x2, y2, w] of lines) {
+      const X1 = ax + x1 * Hd, Y1 = ayS - y1 * Hd, X2 = ax + x2 * Hd, Y2 = ayS - y2 * Hd;
+      const len = Math.hypot(X2 - X1, Y2 - Y1), n = Math.ceil(len / (cw * 0.4));
+      const tw = cw * 0.55 * w, th = chh * 0.35 * w;
+      for (let k = 0; k <= n; k++) {
+        const x = X1 + (X2 - X1) * k / n, y = Y1 + (Y2 - Y1) * k / n;
+        for (let c = Math.floor((x - tw) / cw); c <= Math.floor((x + tw) / cw); c++)
+          for (let r = Math.floor((y - th) / chh); r <= Math.floor((y + th) / chh); r++) mark(c, r, 1);
       }
     }
-    // 线条两侧压暗，让驯鹿从树上跳出来
-    const isLine = new Set(halo.map(([c, r]) => r * cols + c));
-    for (const [c, r] of halo) for (const [dc, dr] of [[-1,0],[1,0],[0,-1],[0,1]]) {
-      const i = (r + dr) * cols + c + dc;
-      if (i < 0 || i >= CH.length || isLine.has(i) || !CH[i]) continue;
-      const k = 1 - 0.65 * A.deer; CR[i] *= k; CG[i] *= k; CB[i] *= k;
+    // 身体：白色轮廓 + 里面一行行 x+ 花纹
+    const c0 = Math.round((ax + body.x0 * Hd) / cw), c1 = Math.round((ax + body.x1 * Hd) / cw);
+    const r0 = Math.round((ayS - body.y1 * Hd) / chh), r1 = Math.round((ayS - body.y0 * Hd) / chh);
+    for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
+      const edgeR = r === r0 || r === r1, edgeC = c === c0 || c === c1;
+      if (edgeR && edgeC) continue;                       // 圆角
+      if (edgeR || edgeC) mark(c, r, 1);
+      else if ((r - r0) % 2 === 0) mark(c, r, 2);         // 花纹行
+      else mark(c, r, 3);                                 // 花纹行之间留暗
+    }
+    // 外圈一格压暗，让驯鹿从树上「抠」出来
+    for (const i of list) {
+      const c = i % cols, r = i / cols | 0;
+      for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+        const j = (r + dr) * cols + c + dc;
+        if (j < 0 || j >= CH.length || DMARK[j] || !CH[j]) continue;
+        const k = 1 - 0.85 * clamp(A.deer * 1.5);
+        CR[j] *= k; CG[j] *= k; CB[j] *= k;
+      }
+    }
+    // 画出来：从下往上闪烁着出现
+    const span = Math.max(1, r1 - r0 + 40);
+    for (const i of list) {
+      const c = i % cols, r = i / cols | 0;
+      const h = hash2(c, r);
+      const fromBottom = clamp((ayS / chh - r) / (Hd * 1.45 / chh));
+      if (fromBottom > A.deer * 1.25 - h * 0.25) continue;
+      const tw = 0.82 + 0.18 * Math.sin(t * 5 + h * 40);
+      const type = DMARK[i];
+      if (type === 3) { CH[i] = 0; CR[i] = CG[i] = CB[i] = 0; ZB[i] = -1; continue; }
+      const ch = type === 1 ? code(h < 0.45 ? 'o' : h < 0.8 ? '@' : '8') : code(c % 3 === 1 ? '+' : 'x');
+      const b = type === 1 ? 255 : 215;
+      put(c, r, ch, b * tw, b * tw, (b - 10) * tw);
     }
   }
 
