@@ -4,6 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>ASCII Christmas Tree · 手势圣诞树</title>
+<meta name="theme-color" content="#0b0d12">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <style>
   html,body{margin:0;height:100%;background:#0b0d12;overflow:hidden;color:#cfd8dc;
     font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;-webkit-user-select:none;user-select:none}
@@ -29,7 +33,7 @@
 
 <div id="start">
   <h1>ASCII · XMAS · TREE</h1>
-  <p>对着摄像头做手势，让字符长成一棵圣诞树<br>没有摄像头：电脑按键盘 0–5，手机点屏幕</p>
+  <p>对着摄像头做手势，让字符长成一棵圣诞树<br>也可以点屏幕一步步切换（电脑可按 0–5）<br>手机建议立起来放好，双手比心更容易识别</p>
   <button id="go">开始 ▶</button>
 </div>
 
@@ -42,7 +46,7 @@
   <div data-s="5">🫶 双手比心 · 驯鹿和雪</div>
 </div>
 <div id="status">按「开始」启用摄像头</div>
-<video id="cam" playsinline muted style="display:none"></video>
+<video id="cam" playsinline muted autoplay style="position:fixed;left:0;top:0;width:2px;height:2px;opacity:0;pointer-events:none"></video>
 
 <script type="module">
 /* =====================================================================
@@ -81,10 +85,10 @@ function resize() {
   // 让整棵树（含星星和地面）放进屏幕
   const [yt, zt] = camYZ(STAR_Y + 0.12, 0), [yb, zb] = camYZ(GROUND, -0.55);
   const sTop = yt / zt, sBot = yb / zb, span = sTop - sBot;
-  F = Math.min(0.8 * H / span, 0.92 * W * CAMD / 1.25);
+  F = Math.min(0.8 * H / span, 1.0 * W * CAMD / 1.02);
   CX = W / 2;
   CY = H * 0.52 + F * (sTop + sBot) / 2;
-  chh = Math.max(6, F * span / 96);   // 树大约 96 行字符高
+  chh = Math.max(4.5, F * span / (matchMedia('(pointer: coarse)').matches ? 90 : 96));   // 树大约 96 行字符高
   cw = chh * 0.6;
   cols = Math.ceil(W / cw); rows = Math.ceil(H / chh);
   const n = cols * rows;
@@ -260,7 +264,7 @@ function setStage(s) {
 document.querySelector('#guide div').classList.add('on');
 let burst = 0;
 addEventListener('keydown', e => { if (e.key >= '0' && e.key <= '5') setStage(+e.key); });
-cv.addEventListener('click', () => { if (!landmarker) setStage((stage + 1) % 6); });
+cv.addEventListener('click', () => setStage((stage + 1) % 6));
 
 function approach(key, target, upS, downS, dt) {
   const v = A[key];
@@ -279,14 +283,15 @@ document.getElementById('go').onclick = async () => {
     const V = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
     const { FilesetResolver, HandLandmarker } = await import(V + '/vision_bundle.mjs');
     const fileset = await FilesetResolver.forVisionTasks(V + '/wasm');
-    landmarker = await HandLandmarker.createFromOptions(fileset, {
-      baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task', delegate: 'GPU' },
+    const make = delegate => HandLandmarker.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task', delegate },
       runningMode: 'VIDEO', numHands: 2
     });
+    try { landmarker = await make('GPU'); } catch (e) { console.warn('GPU 不可用，改用 CPU', e); landmarker = await make('CPU'); }
     statusEl.textContent = '准备好了，举起手吧 🖐';
   } catch (err) {
     console.error(err);
-    statusEl.textContent = '摄像头不可用：键盘 0–5 或点屏幕体验';
+    statusEl.textContent = '摄像头不可用：点屏幕或按 0–5 体验';
   }
 };
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
