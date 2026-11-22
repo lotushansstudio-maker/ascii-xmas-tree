@@ -280,11 +280,12 @@ document.getElementById('go').onclick = async () => {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: 640, height: 480 } });
     video.srcObject = stream; await video.play();
-    const V = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
-    const { FilesetResolver, HandLandmarker } = await import(V + '/vision_bundle.mjs');
-    const fileset = await FilesetResolver.forVisionTasks(V + '/wasm');
+    // 手势模型和运行库都放在仓库里（mp/），不依赖 Google / jsDelivr，在中国大陆也能加载
+    const base = new URL('mp/', location.href).href;
+    const { FilesetResolver, HandLandmarker } = await import(base + 'vision_bundle.mjs');
+    const fileset = await FilesetResolver.forVisionTasks(base + 'wasm');
     const make = delegate => HandLandmarker.createFromOptions(fileset, {
-      baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task', delegate },
+      baseOptions: { modelAssetPath: base + 'hand_landmarker.task', delegate },
       runningMode: 'VIDEO', numHands: 2
     });
     try { landmarker = await make('GPU'); } catch (e) { console.warn('GPU 不可用，改用 CPU', e); landmarker = await make('CPU'); }
