@@ -33,7 +33,7 @@
 
 <div id="start">
   <h1>ASCII · XMAS · TREE</h1>
-  <p>对着摄像头做手势，让字符长成一棵圣诞树<br>也可以点屏幕一步步切换（电脑可按 0–5）<br>手机建议立起来放好，双手比心更容易识别</p>
+  <p>对着摄像头用一只手做手势，让字符长成一棵圣诞树<br>也可以点屏幕一步步切换（电脑可按 0–5）</p>
   <button id="go">开始 ▶</button>
 </div>
 
@@ -41,9 +41,9 @@
   <div data-s="0">✊ 握拳 · 重置</div>
   <div data-s="1">🖐 张开手掌 · 长出圣诞树</div>
   <div data-s="2">☝️ 竖食指 · 点亮星星</div>
-  <div data-s="3">✌️ 比耶 · 挂上彩灯</div>
-  <div data-s="4">🙌 双手张开 · 礼物</div>
-  <div data-s="5">🫶 双手比心 · 驯鹿和雪</div>
+  <div data-s="3">🔄 食指画圈 · 挂上彩灯</div>
+  <div data-s="4">✌️ 比耶 · 礼物</div>
+  <div data-s="5">🧂 搓手指撒盐 · 驯鹿和雪</div>
 </div>
 <div id="status">按「开始」启用摄像头</div>
 <video id="cam" playsinline muted autoplay style="position:fixed;left:0;top:0;width:2px;height:2px;opacity:0;pointer-events:none"></video>
@@ -296,29 +296,74 @@ document.getElementById('go').onclick = async () => {
 };
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 const fingersUp = lm => [[8, 6], [12, 10], [16, 14], [20, 18]].map(([t, p]) => dist(lm[t], lm[0]) > dist(lm[p], lm[0]) * 1.15);
-function classify(hs) {
-  if (!hs.length) return null;
-  if (hs.length === 2) {
-    const [a, b] = hs, size = (dist(a[0], a[9]) + dist(b[0], b[9])) / 2;
-    if (dist(a[8], b[8]) < size * 0.55 && dist(a[4], b[4]) < size * 0.55) return 'heart';
-    if (fingersUp(a).every(Boolean) && fingersUp(b).every(Boolean)) return 'twoOpen';
-  }
-  for (const h of hs) {
-    const e = fingersUp(h), n = e.filter(Boolean).length;
-    if (n === 4) return 'open';
-    if (n === 0) return 'fist';
-    if (e[0] && e[1] && !e[2] && !e[3]) return 'two';
-    if (e[0] && !e[1] && !e[2] && !e[3]) return 'one';
-  }
+
+/* 全部是单手手势（另一只手拿手机）。
+   静态：握拳 / 张开 / 竖食指 / 比耶
+   动态：食指画圈（看食指尖绕了几圈）、搓手指撒盐（拇指在食指中指尖上来回搓） */
+let hist = [], saltActive = false;
+function poseOf(h) {
+  const size = dist(h[0], h[9]);
+  const e = fingersUp(h), n = e.filter(Boolean).length;
+  const bunch = dist(h[4], h[8]) < size * 0.42 && dist(h[4], h[12]) < size * 0.55 && dist(h[8], h[0]) > dist(h[5], h[0]) * 1.15;
+  if (bunch) return 'bunch';
+  if (n === 4) return 'open';
+  if (n === 0) return 'fist';
+  if (e[0] && e[1] && !e[2] && !e[3]) return 'two';
+  if (e[0] && !e[1] && !e[2] && !e[3]) return 'one';
   return null;
 }
-const G2S = { fist: 0, open: 1, one: 2, two: 3, twoOpen: 4, heart: 5 };
-const GNAME = { fist: '握拳', open: '张开手掌', one: '竖食指', two: '比耶', twoOpen: '双手张开', heart: '比心' };
-function handleGesture(g) {
+function record(h, pose, now) {
+  const size = dist(h[0], h[9]);
+  hist.push({ t: now, pose, size, ix: h[8].x, iy: h[8].y,
+    rx: (h[4].x - (h[8].x + h[12].x) / 2) / size, ry: (h[4].y - (h[8].y + h[12].y) / 2) / size,
+    wx: h[9].x / size, wy: h[9].y / size });
+  while (hist.length && now - hist[0].t > 1600) hist.shift();
+}
+function circleTurns() {                      // 食指尖绕中心转了几圈
+  const H = hist.filter(p => p.pose === 'one');
+  if (H.length < 12 || H.length < hist.length * 0.7) return 0;
+  let cx = 0, cy = 0; for (const p of H) { cx += p.ix; cy += p.iy; } cx /= H.length; cy /= H.length;
+  let rad = 0; for (const p of H) rad += Math.hypot(p.ix - cx, p.iy - cy); rad /= H.length;
+  if (rad < H[H.length - 1].size * 0.12) return 0;   // 圈太小 = 只是手抖
+  let sum = 0, prev = Math.atan2(H[0].iy - cy, H[0].ix - cx);
+  for (const p of H) {
+    const a = Math.atan2(p.iy - cy, p.ix - cx); let d = a - prev;
+    if (d > Math.PI) d -= 2 * Math.PI; if (d < -Math.PI) d += 2 * Math.PI;
+    sum += d; prev = a;
+  }
+  return Math.abs(sum) / (2 * Math.PI);
+}
+function rubAmount() {                        // 拇指相对指尖来回搓的距离 + 手腕抖动
+  const H = hist.filter(p => p.pose === 'bunch');
+  if (H.length < 10 || H.length < hist.length * 0.6) return 0;
+  let path = 0;
+  for (let k = 1; k < H.length; k++)
+    path += Math.hypot(H[k].rx - H[k - 1].rx, H[k].ry - H[k - 1].ry) + 0.4 * Math.hypot(H[k].wx - H[k - 1].wx, H[k].wy - H[k - 1].wy);
+  return path;
+}
+const G2S = { fist: 0, open: 1, one: 2, circle: 3, two: 4, salt: 5 };
+const GNAME = { fist: '握拳', open: '张开手掌', one: '竖食指', circle: '食指画圈', two: '比耶', salt: '搓手指撒盐' };
+function fire(g) {
+  const next = g === 'fist' ? 0 : Math.max(stage, G2S[g]);
+  if (next !== stage) statusEl.textContent = '识别到：' + GNAME[g];
+  setStage(next);
+}
+function handleHands(hs, now) {
+  saltActive = false;
+  if (!hs.length) { hist = []; cand = null; return; }
+  const h = hs[0], pose = poseOf(h);
+  record(h, pose, now);
+  // 动态手势
+  const turns = pose === 'one' ? circleTurns() : 0;
+  if (turns > 0.8) { fire('circle'); hist = []; return; }
+  if (pose === 'one' && turns > 0.25 && stage >= 2 && stage < 3) statusEl.textContent = `食指画圈… ${Math.min(99, turns / 0.8 * 100 | 0)}%`;
+  const rub = pose === 'bunch' ? rubAmount() : 0;
+  if (rub > 0.75) { saltActive = true; if (stage < 5) fire('salt'); return; }
+  if (pose === 'bunch' && stage >= 4 && stage < 5) statusEl.textContent = `再搓一搓… ${Math.min(99, rub / 0.75 * 100 | 0)}%`;
+  // 静态手势：保持几帧才算
+  const g = pose === 'bunch' ? null : pose;
   if (g === cand) candN++; else { cand = g; candN = 1; }
-  if (!g || candN !== (g === 'fist' ? 18 : 8)) return;
-  setStage(g === 'fist' ? 0 : Math.max(stage, G2S[g]));
-  statusEl.textContent = '识别到：' + GNAME[g];
+  if (g && candN === (g === 'fist' ? 18 : 8)) fire(g);
 }
 
 /* ---------------- 渲染工具 ---------------- */
@@ -347,7 +392,7 @@ function frame(now) {
   if (landmarker && video.readyState >= 2 && video.currentTime !== lastVT) {
     lastVT = video.currentTime;
     hands = landmarker.detectForVideo(video, now).landmarks || [];
-    handleGesture(classify(hands));
+    handleHands(hands, now);
     handX = hands.length === 1 ? 1 - hands[0][9].x : null;
   }
   // 单手左右移动可以拨动树的旋转
@@ -496,6 +541,10 @@ function frame(now) {
         Math.cos(a) * sp, Math.sin(a) * sp - 60, rand(2.5, 6));
     }
     burst = 0;
+  }
+  if (saltActive && A.grow > 0.9) {                   // 搓手指的时候，从树顶撒下一把雪
+    const [ty, tz] = camYZ(STAR_Y + 0.1, 0);
+    for (let k = 0; k < 6; k++) spawnSnow(CX + rand(-0.35, 0.35) * F / tz, CY - ty * F / tz + rand(-20, 20), rand(-20, 20), rand(20, 90), rand(3, 6));
   }
   if (stage >= 5 && A.deer > 0.9 && Math.random() < 0.5) spawnSnow(rand(0, W), -5, rand(-10, 10), rand(25, 60), rand(8, 14));
   for (let k = SNOW.length - 1; k >= 0; k--) {
