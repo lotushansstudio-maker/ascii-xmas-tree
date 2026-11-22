@@ -2,25 +2,25 @@
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>ASCII Christmas Tree · 手势圣诞树</title>
 <style>
-  html,body{margin:0;height:100%;background:#05070a;overflow:hidden;color:#cfd8dc;
-    font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+  html,body{margin:0;height:100%;background:#0b0d12;overflow:hidden;color:#cfd8dc;
+    font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;-webkit-user-select:none;user-select:none}
   canvas{display:block}
   #start{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
-    gap:18px;background:rgba(5,7,10,.82);z-index:10;text-align:center;padding:20px}
+    gap:18px;background:rgba(11,13,18,.78);z-index:10;text-align:center;padding:20px}
   #start h1{font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:400;letter-spacing:.25em;
-    color:#9be7a8;margin:0;font-size:26px}
-  #start p{margin:0;opacity:.7;font-size:14px;line-height:1.7}
-  button{font:inherit;padding:10px 28px;border-radius:999px;border:1px solid #9be7a8;background:transparent;
-    color:#9be7a8;cursor:pointer;font-size:15px}
-  button:hover{background:#9be7a822}
-  #guide{position:fixed;right:16px;top:16px;font-size:12px;line-height:1.8;text-align:right;
+    color:#a8e6b4;margin:0;font-size:24px}
+  #start p{margin:0;opacity:.7;font-size:14px;line-height:1.8}
+  button{font:inherit;padding:10px 28px;border-radius:999px;border:1px solid #a8e6b4;background:transparent;
+    color:#a8e6b4;cursor:pointer;font-size:15px}
+  button:hover{background:#a8e6b422}
+  #guide{position:fixed;right:14px;top:14px;font-size:12px;line-height:1.8;text-align:right;
     font-family:ui-monospace,Menlo,Consolas,monospace;pointer-events:none}
-  #guide div{opacity:.35;transition:opacity .3s,color .3s}
+  #guide div{opacity:.3;transition:opacity .3s,color .3s}
   #guide div.on{opacity:1;color:#ffe08a}
-  #status{position:fixed;right:16px;bottom:16px;font-size:12px;opacity:.65;
+  #status{position:fixed;right:14px;bottom:14px;font-size:12px;opacity:.6;
     font-family:ui-monospace,Menlo,Consolas,monospace;pointer-events:none;text-align:right}
 </style>
 </head>
@@ -29,7 +29,7 @@
 
 <div id="start">
   <h1>ASCII · XMAS · TREE</h1>
-  <p>对着摄像头做手势，让字符长成一棵圣诞树<br>没有摄像头也可以按键盘 0–5 体验</p>
+  <p>对着摄像头做手势，让字符长成一棵圣诞树<br>没有摄像头：电脑按键盘 0–5，手机点屏幕</p>
   <button id="go">开始 ▶</button>
 </div>
 
@@ -39,169 +39,216 @@
   <div data-s="2">☝️ 竖食指 · 点亮星星</div>
   <div data-s="3">✌️ 比耶 · 挂上彩灯</div>
   <div data-s="4">🙌 双手张开 · 礼物</div>
-  <div data-s="5">🫶 双手比心 · 驯鹿</div>
+  <div data-s="5">🫶 双手比心 · 驯鹿和雪</div>
 </div>
 <div id="status">按「开始」启用摄像头</div>
-
 <video id="cam" playsinline muted style="display:none"></video>
 
 <script type="module">
-/* ================= 基础设置 ================= */
+/* =====================================================================
+   一个很小的「字符 3D 渲染器」：
+   3D 点云 → 旋转 / 透视投影 → z-buffer → 光照 → 按亮度选字符 → 画到字符网格
+   ===================================================================== */
 const cv = document.getElementById('c');
 const ctx = cv.getContext('2d');
+const bloom = document.createElement('canvas');
+const bctx = bloom.getContext('2d');
 const statusEl = document.getElementById('status');
-let W, H, DPR;
+
+const rand = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
+const hash2 = (i, j) => { const s = Math.sin(i * 127.1 + j * 311.7) * 43758.5453; return s - Math.floor(s); };
+const easeOutBack = x => { const c = 1.7; return 1 + (c + 1) * Math.pow(x - 1, 3) + c * Math.pow(x - 1, 2); };
+const code = s => s.charCodeAt(0);
+
+/* ---------------- 相机 ---------------- */
+const CAMD = 3.4, CAMY = 0.22, PITCH = 0.1;
+const CP = Math.cos(PITCH), SP = Math.sin(PITCH);
+const L = (() => { const v = [-0.9, 0.5, -0.3], n = Math.hypot(...v); return v.map(a => a / n); })(); // 左上前方的光
+const GROUND = -0.62, TOP = 0.56, STAR_Y = 0.62;
+
+let W, H, DPR, F, CX, CY, cw, chh, cols, rows;
+let ZB, CH, CR, CG, CB, TY;          // 字符网格缓冲
+function camYZ(y, z) {             // 世界 → 相机（只算 y,z）
+  const qy = y - CAMY, qz = z + CAMD;
+  return [qy * CP + qz * SP, -qy * SP + qz * CP];
+}
 function resize() {
   DPR = Math.min(devicePixelRatio || 1, 2);
   W = innerWidth; H = innerHeight;
   cv.width = W * DPR; cv.height = H * DPR;
   cv.style.width = W + 'px'; cv.style.height = H + 'px';
-  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-}
-addEventListener('resize', resize); resize();
-
-const rand = (a, b) => a + Math.random() * (b - a);
-const pick = arr => arr[Math.random() * arr.length | 0];
-const TREE_CH = '#*+%=@&$x'.split('');
-const GROUND_CH = '.:-~_'.split('');
-
-/* ================= 粒子 =================
-   每个粒子有两个位置：home（散落在地面）和 form（组成造型的位置）。
-   active=true 时飞向 form，否则回到 home。 */
-const P = [];
-function groundPos() {
-  const a = rand(0, Math.PI * 2), r = Math.sqrt(Math.random()) * 0.8;
-  return { x: Math.cos(a) * r, y: -0.64 + rand(-0.012, 0.012), z: Math.sin(a) * r * 0.9 };
-}
-function add(kind, form, opts = {}) {
-  const g = groundPos();
-  P.push({
-    kind, fx: form.x, fy: form.y, fz: form.z,
-    hx: g.x, hy: g.y, hz: g.z, x: g.x, y: g.y, z: g.z,
-    ch: pick(TREE_CH), gch: pick(GROUND_CH), bill: false,
-    active: false, delay: 0, tw: rand(0, 6.28), ...opts
-  });
+  // 让整棵树（含星星和地面）放进屏幕
+  const [yt, zt] = camYZ(STAR_Y + 0.12, 0), [yb, zb] = camYZ(GROUND, -0.55);
+  const sTop = yt / zt, sBot = yb / zb, span = sTop - sBot;
+  F = Math.min(0.8 * H / span, 0.92 * W * CAMD / 1.25);
+  CX = W / 2;
+  CY = H * 0.52 + F * (sTop + sBot) / 2;
+  chh = Math.max(6, F * span / 96);   // 树大约 96 行字符高
+  cw = chh * 0.6;
+  cols = Math.ceil(W / cw); rows = Math.ceil(H / chh);
+  const n = cols * rows;
+  ZB = new Float32Array(n); CH = new Uint16Array(n); TY = new Uint8Array(n);
+  CR = new Uint8ClampedArray(n); CG = new Uint8ClampedArray(n); CB = new Uint8ClampedArray(n);
+  bloom.width = Math.ceil(W / 6); bloom.height = Math.ceil(H / 6);
+  initSky();
 }
 
-// —— 树身：分层的圆锥 ——
-for (let i = 0; i < 2400; i++) {
-  const h = 1 - Math.sqrt(Math.random());          // 底部更密
-  const tier = (h * 4.3) % 1;                       // 4 层“裙边”
-  const maxR = 0.44 * (1 - h) * (0.58 + 0.42 * (1 - tier)) + 0.012;
-  const r = maxR * (0.72 + 0.28 * Math.sqrt(Math.random()));
-  const phi = rand(0, Math.PI * 2);
-  const band = (h * 6 + phi / (Math.PI * 2)) % 1;   // 螺旋彩灯带
-  add('tree', { x: Math.cos(phi) * r, y: -0.5 + h * 1.04, z: Math.sin(phi) * r }, {
-    h, phi, light: band < 0.13, orn: Math.random() < 0.035,
-    ornCol: pick(['#ff5252', '#ffd54f', '#ff8a80']),
-    hue: rand(118, 150), lit: rand(26, 50)
-  });
-}
-// —— 树干 ——
-for (let i = 0; i < 90; i++) {
-  const phi = rand(0, 6.28), r = rand(0, 0.05);
-  add('trunk', { x: Math.cos(phi) * r, y: rand(-0.62, -0.5), z: Math.sin(phi) * r }, { h: 0, ch: pick(['|', '#', 'H']) });
-}
+/* ---------------- 几何：点云 ---------------- */
+const K_TREE = 0, K_TRUNK = 1, K_ORN = 2, K_GAR = 3, K_GIFT = 4;
+const pts = [];   // 先用普通数组收集，再转 typed array
+function P(x, y, z, nx, ny, nz, r, g, b, kind, grp = 0, u = 0) { pts.push(x, y, z, nx, ny, nz, r, g, b, kind, grp, u); }
 
-// —— 星星：五角星（始终正对屏幕）——
-const STAR_Y = 0.6, SO = 0.075, SI = 0.032;
-const starPoly = [];
-for (let i = 0; i < 10; i++) {
-  const a = -Math.PI / 2 + i * Math.PI / 5, r = i % 2 ? SI : SO;
-  starPoly.push([Math.cos(a) * r, Math.sin(a) * r]);
+// 树：6 层带下垂枝尖的圆锥
+const TIERS = [];
+for (let i = 0; i < 6; i++) {
+  const f = i / 5;
+  const yb = -0.47 + i * 0.165, h = 0.3 - f * 0.1;
+  TIERS.push({ yb, yt: i === 5 ? TOP : yb + h, rb: 0.43 * (1 - f * 0.76), rt: i === 5 ? 0 : 0.43 * (1 - f * 0.76) * 0.22, i });
 }
-function inPoly(x, y, poly) {
-  let inside = false;
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const [xi, yi] = poly[i], [xj, yj] = poly[j];
-    if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside;
-  }
-  return inside;
+function tierR(T, s, phi) {
+  const base = T.rt + (T.rb - T.rt) * Math.pow(1 - s, 1.25);
+  const tex = 1 + 0.05 * Math.sin(phi * 23 + s * 9 + T.i) * Math.sin(phi * 7 - s * 5 + T.i * 2);
+  return base * tex;
 }
-let sc = 0;
-while (sc < 170) {
-  const x = rand(-SO, SO), y = rand(-SO, SO);
-  if (inPoly(x, y, starPoly)) { add('star', { x, y: STAR_Y - y, z: 0 }, { bill: true, ch: pick(['*', '+', '#']) }); sc++; }
-}
-for (let i = 0; i < 60; i++) {                       // 十字光芒
-  const dir = i % 4, d = rand(0.08, 0.16);
-  const dx = [d, -d, 0, 0][dir], dy = [0, 0, d, -d][dir];
-  add('star', { x: dx, y: STAR_Y + dy, z: 0 }, { bill: true, ch: '.', ray: true });
-}
+function tierY(T, s, phi) { return T.yb + s * (T.yt - T.yb) - Math.pow(1 - s, 3) * 0.028 * (1 + Math.sin(phi * 9 + T.i)); }
 
-// —— 礼物盒 ——
-const GIFTS = [
-  { x: -0.4, w: 0.17, h: 0.13, c: '#e53935' },
-  { x: -0.15, w: 0.12, h: 0.17, c: '#1e88e5' },
-  { x: 0.2, w: 0.19, h: 0.11, c: '#43a047' },
-  { x: 0.43, w: 0.11, h: 0.14, c: '#8e24aa' },
-];
-for (const g of GIFTS) {
-  const n = Math.round(g.w * g.h * 9000), base = -0.64;
-  for (let i = 0; i < n; i++) {
-    const px = g.x + rand(-g.w / 2, g.w / 2), py = base + rand(0, g.h);
-    const ribbon = Math.abs(px - g.x) < 0.012 || Math.abs(py - (base + g.h * 0.55)) < 0.01;
-    add('gift', { x: px, y: py, z: -0.5 }, { bill: true, col: ribbon ? '#ffe082' : g.c, ch: ribbon ? '=' : pick(['#', '%', '&']) });
-  }
-  for (let i = 0; i < 14; i++) {                     // 蝴蝶结
-    const a = rand(0, 6.28), r = rand(0, 0.025);
-    add('gift', { x: g.x + Math.cos(a) * r * 1.6, y: base + g.h + Math.abs(Math.sin(a)) * r, z: -0.5 }, { bill: true, col: '#ffe082', ch: '@' });
-  }
-}
-
-// —— 驯鹿（像素图，# = 有字符）——
-const DEER = [
-  "  #   #              ",
-  " # # # #             ",
-  "  ## ##              ",
-  "   ###               ",
-  "  #####              ",
-  " ## ####             ",
-  "     ###             ",
-  "      ############   ",
-  "      ############## ",
-  "       ############ #",
-  "       ###########   ",
-  "       ##       ##   ",
-  "       ##       ##   ",
-  "       # #      # #  ",
-  "       #  #     #  # ",
-];
-const CELL = 0.024, DW = DEER[0].length * CELL, DH = DEER.length * CELL, DEER_CY = -0.2;
-DEER.forEach((row, r) => [...row].forEach((c, k) => {
-  if (c !== '#') return;
-  for (let s = 0; s < 4; s++) {
-    add('deer', { x: -DW / 2 + (k + (s % 2) / 2 + 0.25) * CELL, y: DEER_CY + DH / 2 - (r + (s >> 1) / 2 + 0.25) * CELL, z: -0.45 },
-      { bill: true, ch: pick(['#', '@', '%']) });
-  }
-}));
-
-// —— 雪花（屏幕坐标）——
-const SNOW = Array.from({ length: 220 }, () => ({ x: Math.random(), y: Math.random(), v: rand(0.0005, 0.0018), s: rand(0, 6.28) }));
-
-/* ================= 阶段 ================= */
-const NEED = { tree: 1, trunk: 1, star: 2, gift: 4, deer: 5 };
-let stage = -1;
-function setStage(s) {
-  if (s === stage) return;
-  stage = s;
-  for (const p of P) {
-    const on = s >= NEED[p.kind];
-    if (on !== p.active) {
-      p.active = on;
-      p.delay = on ? (p.kind === 'tree' || p.kind === 'trunk' ? p.h * 70 + rand(0, 18) : rand(0, 35)) : rand(0, 40);
+const SP_ = 0.0055;   // 采样间距
+for (const T of TIERS) {
+  const h = T.yt - T.yb;
+  for (let s = 0; s <= 1; s += SP_ / h * 0.9) {
+    const r0 = T.rt + (T.rb - T.rt) * Math.pow(1 - s, 1.25);
+    const n = Math.max(6, Math.ceil(2 * Math.PI * r0 / SP_));
+    const slope = (T.rb - T.rt) * 1.25 * Math.pow(Math.max(1 - s, 0.001), 0.25) / h;   // -dr/dy
+    const off = Math.random() * 6.28;
+    for (let k = 0; k < n; k++) {
+      const phi = off + k / n * Math.PI * 2;
+      const r = tierR(T, s, phi), y = tierY(T, s, phi);
+      const nl = Math.hypot(1, slope);
+      P(Math.cos(phi) * r, y, Math.sin(phi) * r, Math.cos(phi) / nl, slope / nl, Math.sin(phi) / nl, 0, 0, 0, K_TREE, 0, T.i === 5 ? 0 : clamp((s - 0.5) / 0.5));
     }
   }
+}
+// 树干
+for (let y = GROUND; y < -0.42; y += SP_) for (let k = 0; k < 70; k++) {
+  const phi = k / 70 * 6.283;
+  P(Math.cos(phi) * 0.065, y, Math.sin(phi) * 0.065, Math.cos(phi), 0, Math.sin(phi), 0, 0, 0, K_TRUNK);
+}
+// 红色 / 金色挂球
+for (const T of TIERS) {
+  if (T.i === 5) continue;
+  const n = 7 - T.i;
+  for (let b = 0; b < n; b++) {
+    const s = rand(0.12, 0.45), phi = b / n * 6.283 + rand(-0.3, 0.3);
+    const rr = tierR(T, s, phi) + 0.012, cy = tierY(T, s, phi) - 0.012;
+    const cx = Math.cos(phi) * rr, cz = Math.sin(phi) * rr, R = 0.021;
+    const gold = Math.random() < 0.22;
+    const c = gold ? [235, 185, 70] : [205, 32, 48];
+    for (let a = 0; a < 18; a++) for (let e = 0; e < 10; e++) {
+      const th = a / 18 * 6.283, ph = (e + 0.5) / 10 * Math.PI;
+      const nx = Math.sin(ph) * Math.cos(th), ny = Math.cos(ph), nz = Math.sin(ph) * Math.sin(th);
+      P(cx + nx * R, cy + ny * R, cz + nz * R, nx, ny, nz, ...c, K_ORN);
+    }
+  }
+}
+// 彩灯带：绕在每层下缘的彩虹波浪
+for (const T of TIERS) {
+  if (T.i === 5) continue;
+  for (let band = 0; band < 4; band++) {
+    const n = Math.ceil(2 * Math.PI * T.rb / 0.0055);
+    for (let k = 0; k < n; k++) {
+      const phi = k / n * 6.283;
+      const s = 0.1 + 0.07 * Math.sin(phi + T.i * 1.7) + 0.015 * Math.sin(phi * 5);
+      const r = tierR(T, s, phi) * 1.03 + 0.008;
+      const y = tierY(T, s, phi) + band * 0.006;
+      const u = k / n;
+      P(Math.cos(phi) * r, y, Math.sin(phi) * r, Math.cos(phi), 0.3, Math.sin(phi), T.i, 0, 0, K_GAR, 0, u);
+    }
+  }
+}
+// 礼物盒（第 grp 组，可单独缩放弹出）
+const GIFTS = [
+  { a: 0.6, r: 0.42, w: 0.17, h: 0.13, d: 0.15, c: [200, 40, 45] },
+  { a: 2.1, r: 0.44, w: 0.13, h: 0.17, d: 0.13, c: [40, 110, 210] },
+  { a: 3.4, r: 0.42, w: 0.19, h: 0.1, d: 0.16, c: [235, 185, 60] },
+  { a: 4.6, r: 0.4, w: 0.12, h: 0.14, d: 0.12, c: [140, 60, 190] },
+  { a: 5.6, r: 0.46, w: 0.15, h: 0.11, d: 0.14, c: [45, 160, 90] },
+];
+GIFTS.forEach((g, gi) => {
+  g.cx = Math.cos(g.a) * g.r; g.cz = Math.sin(g.a) * g.r;
+  const rot = rand(0, 1.5), ca = Math.cos(rot), sa = Math.sin(rot);
+  const put = (lx, ly, lz, nx, ny, nz) => {
+    const ribbon = Math.abs(lx) < g.w * 0.09 || Math.abs(lz) < g.d * 0.09;
+    const col = ribbon ? [245, 215, 120] : g.c;
+    P(g.cx + lx * ca - lz * sa, GROUND + ly, g.cz + lx * sa + lz * ca, nx * ca - nz * sa, ny, nx * sa + nz * ca, ...col, K_GIFT, gi + 1);
+  };
+  const st = 0.0055;
+  for (let x = -g.w / 2; x <= g.w / 2; x += st) for (let z = -g.d / 2; z <= g.d / 2; z += st) put(x, g.h, z, 0, 1, 0);
+  for (let x = -g.w / 2; x <= g.w / 2; x += st) for (let y = 0; y <= g.h; y += st) { put(x, y, -g.d / 2, 0, 0, -1); put(x, y, g.d / 2, 0, 0, 1); }
+  for (let z = -g.d / 2; z <= g.d / 2; z += st) for (let y = 0; y <= g.h; y += st) { put(-g.w / 2, y, z, -1, 0, 0); put(g.w / 2, y, z, 1, 0, 0); }
+  for (let k = 0; k < 120; k++) {                     // 蝴蝶结
+    const t = k / 120 * 6.283, side = k % 2 ? 1 : -1;
+    const lx = side * (0.02 + 0.018 * Math.cos(t)), ly = g.h + 0.012 + 0.014 * Math.abs(Math.sin(t));
+    P(g.cx + lx * ca, GROUND + ly, g.cz + lx * sa, 0, 1, 0, 250, 220, 130, K_GIFT, gi + 1);
+  }
+});
+
+const STRIDE = 12, NP = pts.length / STRIDE;
+const D = new Float32Array(pts); pts.length = 0;
+const RND = new Float32Array(NP).map(Math.random);
+
+/* ---------------- 驯鹿：线条画（朝右）---------------- */
+const DEER = [
+  [[0.30,0.56],[0.50,0.58],[0.72,0.58],[0.86,0.55],[0.93,0.48],[0.92,0.38],[0.85,0.32],[0.70,0.31],[0.50,0.31],[0.36,0.33],[0.28,0.40]],
+  [[0.28,0.40],[0.20,0.55],[0.14,0.70]],
+  [[0.30,0.56],[0.24,0.68],[0.21,0.79]],
+  [[0.14,0.70],[0.06,0.68],[0.01,0.70],[0.02,0.74],[0.12,0.80],[0.21,0.79]],
+  [[0.20,0.80],[0.28,0.84],[0.22,0.78]],
+  [[0.16,0.81],[0.18,0.92],[0.26,1.00],[0.34,1.06]],
+  [[0.18,0.92],[0.11,0.98]],
+  [[0.24,0.99],[0.24,1.09]],
+  [[0.13,0.81],[0.08,0.90],[0.05,1.02],[0.08,1.10]],
+  [[0.07,0.94],[0.00,0.98]],
+  [[0.36,0.33],[0.34,0.18],[0.36,0.00]],
+  [[0.44,0.31],[0.45,0.17],[0.42,0.00]],
+  [[0.78,0.31],[0.82,0.17],[0.79,0.00]],
+  [[0.88,0.35],[0.93,0.18],[0.91,0.00]],
+  [[0.93,0.48],[0.99,0.55]],
+].map(line => line.map(([x, y]) => [1 - x, y]));   // 镜像成朝右
+
+/* ---------------- 天空 / 雪 ---------------- */
+let SKY = [];
+function initSky() {
+  SKY = Array.from({ length: Math.round(cols * rows * 0.006) }, () => ({
+    c: Math.random() * cols | 0, r: Math.random() * rows | 0, ph: rand(0, 6.28), sp: rand(0.5, 2),
+    ch: code(Math.random() < 0.18 ? '+' : '.')
+  }));
+}
+const SNOW = [];   // 屏幕坐标粒子
+function spawnSnow(x, y, vx, vy, life) { SNOW.push({ x, y, vx, vy, life, max: life, ch: code(Math.random() < 0.3 ? '*' : '.') }); }
+
+/* ---------------- 阶段与动画 ---------------- */
+const A = { grow: 0, star: 0, light: 0, gift: 0, deer: 0 };
+let stage = 0;
+function setStage(s) {
+  if (s === stage) return;
+  if (s >= 5 && stage < 5) burst = 1;
+  stage = s;
   document.querySelectorAll('#guide div').forEach(d => d.classList.toggle('on', +d.dataset.s <= s && (s > 0 || +d.dataset.s === 0)));
 }
-setStage(0);
+document.querySelector('#guide div').classList.add('on');
+let burst = 0;
 addEventListener('keydown', e => { if (e.key >= '0' && e.key <= '5') setStage(+e.key); });
+cv.addEventListener('click', () => { if (!landmarker) setStage((stage + 1) % 6); });
 
-/* ================= 手势识别（MediaPipe Hand Landmarker）================= */
+function approach(key, target, upS, downS, dt) {
+  const v = A[key];
+  A[key] = target > v ? Math.min(target, v + dt / upS) : Math.max(target, v - dt / downS);
+}
+
+/* ---------------- 手势 ---------------- */
 const video = document.getElementById('cam');
-let landmarker = null, hands = [], lastVT = -1;
-let cand = null, candN = 0, lastGesture = '';
-
+let landmarker = null, hands = [], lastVT = -1, cand = null, candN = 0;
 document.getElementById('go').onclick = async () => {
   document.getElementById('start').style.display = 'none';
   statusEl.textContent = '正在加载手势模型…';
@@ -212,24 +259,17 @@ document.getElementById('go').onclick = async () => {
     const { FilesetResolver, HandLandmarker } = await import(V + '/vision_bundle.mjs');
     const fileset = await FilesetResolver.forVisionTasks(V + '/wasm');
     landmarker = await HandLandmarker.createFromOptions(fileset, {
-      baseOptions: {
-        modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
-        delegate: 'GPU'
-      },
+      baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task', delegate: 'GPU' },
       runningMode: 'VIDEO', numHands: 2
     });
     statusEl.textContent = '准备好了，举起手吧 🖐';
   } catch (err) {
     console.error(err);
-    statusEl.textContent = '摄像头或模型不可用：可按键盘 0–5 体验';
+    statusEl.textContent = '摄像头不可用：键盘 0–5 或点屏幕体验';
   }
 };
-
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
-function fingersUp(lm) {        // 食指、中指、无名指、小指是否伸直
-  const w = lm[0];
-  return [[8, 6], [12, 10], [16, 14], [20, 18]].map(([t, p]) => dist(lm[t], w) > dist(lm[p], w) * 1.15);
-}
+const fingersUp = lm => [[8, 6], [12, 10], [16, 14], [20, 18]].map(([t, p]) => dist(lm[t], lm[0]) > dist(lm[p], lm[0]) * 1.15);
 function classify(hs) {
   if (!hs.length) return null;
   if (hs.length === 2) {
@@ -250,115 +290,311 @@ const G2S = { fist: 0, open: 1, one: 2, two: 3, twoOpen: 4, heart: 5 };
 const GNAME = { fist: '握拳', open: '张开手掌', one: '竖食指', two: '比耶', twoOpen: '双手张开', heart: '比心' };
 function handleGesture(g) {
   if (g === cand) candN++; else { cand = g; candN = 1; }
-  const need = g === 'fist' ? 20 : 8;                 // 防抖：手势需保持几帧
-  if (!g || candN !== need) return;
-  lastGesture = g;
+  if (!g || candN !== (g === 'fist' ? 18 : 8)) return;
   setStage(g === 'fist' ? 0 : Math.max(stage, G2S[g]));
   statusEl.textContent = '识别到：' + GNAME[g];
 }
 
-/* ================= 渲染 ================= */
-const BONES = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],
-  [9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
+/* ---------------- 渲染工具 ---------------- */
+const TREE_RAMP = [...'.:;+=xo*#%&8@'].map(code);
+const CAP_RAMP = [...'-=+*#%@'].map(code);
+function put(c, r, ch, R, G, B) {
+  if (c < 0 || r < 0 || c >= cols || r >= rows) return;
+  const i = r * cols + c; CH[i] = ch; CR[i] = R; CG[i] = G; CB[i] = B; ZB[i] = -1;
+}
+function hsl(h, s, l) {     // → [r,g,b]
+  h = ((h % 360) + 360) % 360 / 360;
+  const q = l < .5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+  const f = t => { t = (t + 1) % 1; return 255 * (t < 1 / 6 ? p + (q - p) * 6 * t : t < .5 ? q : t < 2 / 3 ? p + (q - p) * (2 / 3 - t) * 6 : p); };
+  return [f(h + 1 / 3), f(h), f(h - 1 / 3)];
+}
+
+/* ---------------- 主循环 ---------------- */
+let last = performance.now(), rot = 0, spin = 0.32, handX = null;
+const BONES = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
+
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  const t = now / 1000;
+
+  // —— 手势 ——
+  if (landmarker && video.readyState >= 2 && video.currentTime !== lastVT) {
+    lastVT = video.currentTime;
+    hands = landmarker.detectForVideo(video, now).landmarks || [];
+    handleGesture(classify(hands));
+    handX = hands.length === 1 ? 1 - hands[0][9].x : null;
+  }
+  // 单手左右移动可以拨动树的旋转
+  spin += ((handX === null ? 0.32 : 0.32 + (handX - 0.5) * 3) - spin) * 0.05;
+  rot += spin * dt;
+
+  // —— 动画进度 ——
+  const down = stage === 0;
+  approach('grow', stage >= 1 ? 1 : 0, 2.8, 1.6, dt);
+  approach('star', stage >= 2 && A.grow > 0.97 ? 1 : 0, 0.9, down ? 0.3 : 0.6, dt);
+  approach('light', stage >= 3 && A.grow > 0.97 ? 1 : 0, 1.8, down ? 0.4 : 0.8, dt);
+  approach('gift', stage >= 4 && A.grow > 0.97 ? 1 : 0, 1.6, down ? 0.4 : 0.8, dt);
+  approach('deer', stage >= 5 && A.grow > 0.97 ? 1 : 0, 2.2, down ? 0.4 : 0.8, dt);
+
+  // —— 清空缓冲 ——
+  ZB.fill(1e9); CH.fill(0); TY.fill(0);
+
+  // —— 地面（逐格反投影到 y=GROUND 平面）——
+  for (let r = 0; r < rows; r++) {
+    const dyc = -((r + 0.5) * chh - CY) / F;
+    const dirY = dyc * CP - SP;
+    if (dirY >= -1e-4) continue;
+    const tHit = (GROUND - CAMY) / dirY, dz = dyc * SP + CP;
+    const hz = -CAMD + tHit * dz;
+    if (hz > 2.6) continue;
+    const stripe = (hz * 9) % 1;
+    if (stripe > 0.55) continue;
+    const far = clamp(1 - (hz - 0.2) / 2.4);
+    for (let c = 0; c < cols; c++) {
+      const hx = tHit * ((c + 0.5) * cw - CX) / F;
+      const h = hash2(Math.floor(hx * 26), Math.floor(hz * 9));
+      if (h < 0.18) continue;
+      const rr = hx * hx + hz * hz;
+      const b = (0.32 + 0.55 * Math.exp(-rr * 1.2) * (0.35 + 0.65 * A.grow)) * far;
+      const i = r * cols + c;
+      ZB[i] = tHit; CH[i] = h > 0.86 ? 61 : 45;    // '=' or '-'
+      CR[i] = 205 * b; CG[i] = 172 * b; CB[i] = 120 * b;
+    }
+  }
+
+  // —— 3D 点云 ——
+  const cy_ = Math.cos(rot), sy_ = Math.sin(rot);
+  const clipY = GROUND + A.grow * (TOP + 0.04 - GROUND);
+  const growing = A.grow > 0 && A.grow < 1;
+  const gScale = GIFTS.map((g, k) => { const e = clamp(A.gift * 2.2 - k * 0.28); return e > 0 ? easeOutBack(e) : 0; });
+  for (let p = 0; p < NP; p++) {
+    const o = p * STRIDE, kind = D[o + 9];
+    let x = D[o], y = D[o + 1], z = D[o + 2];
+    if (kind !== K_GIFT && y > clipY) continue;
+    if (kind === K_GAR) {
+      const sweep = (1 - (y - GROUND) / (TOP - GROUND)) * 0.55 + D[o + 11] * 0.45;
+      if (sweep > A.light * 1.02) continue;
+    }
+    if (kind === K_GIFT) {
+      const s = gScale[D[o + 10] - 1]; if (s <= 0) continue;
+      const g = GIFTS[D[o + 10] - 1];
+      x = g.cx + (x - g.cx) * s; y = GROUND + (y - GROUND) * s; z = g.cz + (z - g.cz) * s;
+    }
+    const nx0 = D[o + 3], ny = D[o + 4], nz0 = D[o + 5];
+    const xr = x * cy_ + z * sy_, zr = -x * sy_ + z * cy_;
+    const nx = nx0 * cy_ + nz0 * sy_, nzr = -nx0 * sy_ + nz0 * cy_;
+    const qy = y - CAMY, qz = zr + CAMD;
+    const yc = qy * CP + qz * SP, zc = -qy * SP + qz * CP;
+    const nyc = ny * CP + nzr * SP, nzc = -ny * SP + nzr * CP;
+    if (nzc > 0.3) continue;                       // 背面剔除
+    const sx = CX + xr * F / zc, sy = CY - yc * F / zc;
+    const c = sx / cw | 0, r = sy / chh | 0;
+    if (c < 0 || r < 0 || c >= cols || r >= rows) continue;
+    const i = r * cols + c;
+    if (zc >= ZB[i]) continue;
+    ZB[i] = zc;
+    let lum = Math.max(0, nx * L[0] + nyc * L[1] + nzc * L[2]);
+    let R, G, B, ch;
+    if (kind === K_TREE) {
+      lum = clamp((0.06 + 0.94 * lum) * (0.8 + 0.4 * RND[p]) * (1 - 0.55 * D[o + 11]) + Math.max(0, nyc) * 0.1);
+      if (lum < 0.5) { const k = lum * 2; R = 12 + 38 * k; G = 50 + 95 * k; B = 32 + 45 * k; }
+      else { const k = (lum - 0.5) * 2; R = 50 + 125 * k; G = 145 + 95 * k; B = 77 + 108 * k; }
+      ch = TREE_RAMP[Math.min(12, (0.22 + 0.78 * lum) * 13 | 0)];
+      TY[i] = 1;
+      if (growing && clipY - y < 0.05) {            // 生长边缘的白紫色高光
+        const k = (1 - (clipY - y) / 0.05) * 0.75;
+        R += (225 - R) * k; G += (215 - G) * k; B += (255 - B) * k;
+      }
+    } else if (kind === K_TRUNK) {
+      lum = 0.2 + 0.8 * lum; R = 120 * lum; G = 78 * lum; B = 45 * lum; ch = TREE_RAMP[(4 + lum * 8) | 0];
+    } else if (kind === K_ORN) {
+      const spec = Math.pow(lum, 14) * 190, l2 = 0.3 + 0.85 * lum;
+      R = D[o + 6] * l2 + spec; G = D[o + 7] * l2 + spec; B = D[o + 8] * l2 + spec; ch = code(lum > 0.6 ? '@' : 'o');
+    } else if (kind === K_GAR) {
+      const tw = 0.7 + 0.3 * Math.sin(t * 5 + RND[p] * 30);
+      const [r1, g1, b1] = hsl(D[o + 11] * 360 * 1.3 + D[o + 6] * 55 - t * 45, 0.95, 0.6);
+      R = r1 * tw; G = g1 * tw; B = b1 * tw; ch = code(RND[p] > 0.5 ? '@' : '#');
+    } else {
+      const l2 = 0.28 + 0.85 * lum; R = D[o + 6] * l2; G = D[o + 7] * l2; B = D[o + 8] * l2;
+      ch = TREE_RAMP[Math.min(12, (0.35 + 0.65 * lum) * 13 | 0)];
+    }
+    CH[i] = ch; CR[i] = R; CG[i] = G; CB[i] = B;
+  }
+
+  // —— 补洞：被树包围的空格子用邻居填上，避免竖条纹 ——
+  for (let r = 1; r < rows - 1; r++) for (let c = 1; c < cols - 1; c++) {
+    const i = r * cols + c; if (TY[i]) continue;
+    const a = TY[i - 1] && TY[i + 1] ? i - 1 : TY[i - cols] && TY[i + cols] ? i - cols : -1;
+    if (a < 0) continue;
+    CH[i] = CH[a]; CR[i] = CR[a] * 0.9; CG[i] = CG[a] * 0.9; CB[i] = CB[a] * 0.9; ZB[i] = ZB[a]; TY[i] = 2;
+  }
+
+  // —— 生长切面：一圈发光的白紫色圆盘 ——
+  if (growing) {
+    for (const T of TIERS) {
+      if (clipY < T.yb - 0.03 || clipY > T.yt) continue;
+      const s = clamp((clipY - T.yb) / (T.yt - T.yb));
+      const R0 = T.rt + (T.rb - T.rt) * Math.pow(1 - s, 1.25);
+      for (let rr = 0; rr <= R0; rr += 0.007) {
+        const n = Math.max(1, Math.ceil(6.283 * rr / 0.006)), q = rr / Math.max(R0, 1e-3);
+        for (let k = 0; k < n; k++) {
+          const phi = k / n * 6.283;
+          const x = Math.cos(phi) * rr, z = Math.sin(phi) * rr;
+          const xr = x * cy_ + z * sy_, zr = -x * sy_ + z * cy_;
+          const [yc, zc] = camYZ(clipY, zr);
+          const c = (CX + xr * F / zc) / cw | 0, r = (CY - yc * F / zc) / chh | 0;
+          if (c < 0 || r < 0 || c >= cols || r >= rows) continue;
+          const i = r * cols + c;
+          if (zc >= ZB[i]) continue;
+          ZB[i] = zc;
+          const band = 0.5 + 0.5 * Math.sin(q * 16 - t * 6);
+          const b = 0.55 + 0.45 * q;
+          CR[i] = (150 + 100 * band) * b; CG[i] = (125 + 120 * band) * b; CB[i] = 255 * b;
+          CH[i] = CAP_RAMP[Math.min(6, (q * 0.6 + band * 0.4) * 7 | 0)];
+        }
+      }
+    }
+    if (A.grow < 0.95 && stage >= 1 && Math.random() < 0.7) {     // 生长时往上飘的光点
+      const a = rand(0, 6.28), rr = rand(0, 0.45);
+      const [yc, zc] = camYZ(clipY, Math.sin(a) * rr);
+      spawnSnow(CX + Math.cos(a) * rr * F / zc, CY - yc * F / zc, rand(-8, 8), rand(-60, -20), rand(0.8, 1.6));
+    }
+  }
+
+  // —— 雪 ——
+  if (burst > 0) {                                     // 比心时爆开一圈雪
+    const [ty, tz] = camYZ(0.05, 0);
+    for (let k = 0; k < 450; k++) {
+      const a = rand(0, 6.28), sp = rand(40, 260);
+      spawnSnow(CX + rand(-0.3, 0.3) * F / tz, CY - ty * F / tz + rand(-0.4, 0.4) * F / tz,
+        Math.cos(a) * sp, Math.sin(a) * sp - 60, rand(2.5, 6));
+    }
+    burst = 0;
+  }
+  if (stage >= 5 && A.deer > 0.9 && Math.random() < 0.5) spawnSnow(rand(0, W), -5, rand(-10, 10), rand(25, 60), rand(8, 14));
+  for (let k = SNOW.length - 1; k >= 0; k--) {
+    const s = SNOW[k];
+    s.life -= dt; if (s.life <= 0 || s.y > H + 10) { SNOW.splice(k, 1); continue; }
+    s.vx *= 0.985; s.vy = s.vy * 0.985 + 22 * dt;
+    s.x += (s.vx + Math.sin(t * 2 + k) * 6) * dt; s.y += s.vy * dt;
+    const a = clamp(s.life / s.max * 1.5) * 235;
+    put(s.x / cw | 0, s.y / chh | 0, s.ch, a, a, a + 15);
+  }
+
+  // —— 星星 ——
+  let starPos = null;
+  if (A.star > 0) {
+    const [yc, zc] = camYZ(STAR_Y, 0);
+    const c0 = Math.round(CX / cw), r0 = Math.round((CY - yc * F / zc) / chh);
+    starPos = [c0 * cw + cw / 2, r0 * chh + chh / 2];
+    const s = easeOutBack(clamp(A.star)), pulse = 0.88 + 0.12 * Math.sin(t * 3.2);
+    const gold = (k) => [255 * k, 222 * k, 150 * k];
+    const Lh = Math.round(15 * s * pulse), Lv = Math.round(10 * s * pulse);
+    for (let k = 2; k <= Lh; k++) { const f = 1 - k / (Lh + 1); put(c0 - k, r0, code(k > Lh * 0.75 ? '.' : '-'), ...gold(f)); put(c0 + k, r0, code(k > Lh * 0.75 ? '.' : '-'), ...gold(f)); }
+    for (let k = 1; k <= Lv; k++) { const f = 1 - k / (Lv + 1); put(c0, r0 - k, code(k > Lv * 0.8 ? ':' : '|'), ...gold(f)); }
+    for (let k = 1; k <= Math.round(5 * s); k++) put(c0, r0 + k, code('|'), ...gold(0.6 - k * 0.1));
+    if (s > 0.3) {
+      for (let k = 1; k <= 3; k++) {
+        const f = 0.9 - k * 0.15;
+        put(c0 - 1 - k, r0 - 1, code('\\'), ...gold(f)); put(c0 + 1 + k, r0 - 1, code('/'), ...gold(f));
+        put(c0 - 1 - k, r0 + 1, code('/'), ...gold(f)); put(c0 + 1 + k, r0 + 1, code('\\'), ...gold(f));
+      }
+      put(c0 - 4, r0 - 2, code(':'), ...gold(0.5)); put(c0 + 4, r0 - 2, code(':'), ...gold(0.5));
+      put(c0 - 4, r0 + 2, code(':'), ...gold(0.5)); put(c0 + 4, r0 + 2, code(':'), ...gold(0.5));
+    }
+    for (let k = -1; k <= 1; k++) { put(c0 + k, r0 - 1, code('#'), 255, 215, 120); put(c0 + k, r0 + 1, code('#'), 255, 215, 120); }
+    for (let k = -2; k <= 2; k++) put(c0 + k, r0, code(Math.abs(k) === 2 ? '#' : '@'), 255, 240, 190);
+    for (let k = 0; k < 10; k++) {                    // 星星周围一闪一闪的 +
+      const tw = Math.sin(t * 2.5 + k * 1.9);
+      if (tw > 0.3) put(c0 + Math.round(Math.cos(k * 2.4) * (6 + k % 4 * 2)), r0 + Math.round(Math.sin(k * 2.4) * (3 + k % 3)), code(tw > 0.8 ? '+' : '.'), 230 * tw, 230 * tw, 240 * tw);
+    }
+  }
+
+  // —— 驯鹿：沿线条一笔一笔画出来 ——
+  if (A.deer > 0) {
+    const [ay, az] = camYZ(-0.47, -0.5);
+    const ax = CX - 0.02 * F / az, ayS = CY - ay * F / az;
+    const dw = 0.44 * F / az, dh = dw * 0.95;
+    let budget = A.deer * 1.15 * DEER.reduce((s, l) => s + l.slice(1).reduce((q, p, k) => q + Math.hypot((p[0] - l[k][0]) * dw, (p[1] - l[k][1]) * dh), 0), 0);
+    const halo = [];
+    for (const line of DEER) for (let k = 1; k < line.length && budget > 0; k++) {
+      const x1 = ax + (line[k - 1][0] - 0.5) * dw, y1 = ayS - line[k - 1][1] * dh;
+      const x2 = ax + (line[k][0] - 0.5) * dw, y2 = ayS - line[k][1] * dh;
+      const len = Math.hypot(x2 - x1, y2 - y1);
+      let ang = Math.atan2(-(y2 - y1), x2 - x1) * 180 / Math.PI; ang = (ang + 180) % 180;
+      const ch = code(ang < 22 || ang > 158 ? '-' : ang < 68 ? '/' : ang < 112 ? '|' : '\\');
+      const steps = Math.ceil(len / (Math.min(cw, chh) * 0.5));
+      for (let j = 0; j <= steps && budget > 0; j++, budget -= len / steps) {
+        const c = (x1 + (x2 - x1) * j / steps) / cw | 0, r = (y1 + (y2 - y1) * j / steps) / chh | 0;
+        const tw = 0.78 + 0.22 * Math.sin(t * 4 + c * 0.7 + r * 1.3);
+        halo.push([c, r]);
+        put(c, r, ch, 255 * tw, 250 * tw, 238 * tw);
+      }
+    }
+    // 线条两侧压暗，让驯鹿从树上跳出来
+    const isLine = new Set(halo.map(([c, r]) => r * cols + c));
+    for (const [c, r] of halo) for (const [dc, dr] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+      const i = (r + dr) * cols + c + dc;
+      if (i < 0 || i >= CH.length || isLine.has(i) || !CH[i]) continue;
+      const k = 1 - 0.65 * A.deer; CR[i] *= k; CG[i] *= k; CB[i] *= k;
+    }
+  }
+
+  // —— 背景星空（只填空格子）——
+  for (const s of SKY) {
+    const i = s.r * cols + s.c; if (CH[i]) continue;
+    const b = 0.25 + 0.35 * (0.5 + 0.5 * Math.sin(t * s.sp + s.ph));
+    CH[i] = s.ch; CR[i] = 210 * b; CG[i] = 215 * b; CB[i] = 235 * b;
+  }
+
+  // —— 画字符网格 ——
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+  ctx.fillStyle = '#0b0d12'; ctx.fillRect(0, 0, W, H);
+  ctx.font = `bold ${Math.round(chh * 1.02)}px ui-monospace,Menlo,Consolas,"Courier New",monospace`;
+  ctx.textBaseline = 'top'; ctx.textAlign = 'left';
+  let lastStyle = -1;
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const i = r * cols + c, ch = CH[i]; if (!ch) continue;
+    const key = (CR[i] >> 3) << 10 | (CG[i] >> 3) << 5 | (CB[i] >> 3);
+    if (key !== lastStyle) { ctx.fillStyle = `rgb(${CR[i]},${CG[i]},${CB[i]})`; lastStyle = key; }
+    ctx.fillText(String.fromCharCode(ch), c * cw, r * chh);
+  }
+
+  // —— 柔光：缩小再放大叠加 ——
+  bctx.clearRect(0, 0, bloom.width, bloom.height);
+  bctx.drawImage(cv, 0, 0, bloom.width, bloom.height);
+  ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = 0.32; ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(bloom, 0, 0, W, H);
+  if (starPos) {
+    const R = chh * 14 * A.star * (0.9 + 0.1 * Math.sin(t * 3.2));
+    const g = ctx.createRadialGradient(...starPos, 0, ...starPos, R);
+    g.addColorStop(0, 'rgba(255,215,130,.45)'); g.addColorStop(1, 'rgba(255,215,130,0)');
+    ctx.globalAlpha = 1; ctx.fillStyle = g; ctx.fillRect(starPos[0] - R, starPos[1] - R, 2 * R, 2 * R);
+  }
+  ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+
+  drawCam();
+  requestAnimationFrame(frame);
+}
 
 function drawCam() {
   if (!video.videoWidth) return;
-  const pw = Math.min(230, W * 0.34), ph = pw * video.videoHeight / video.videoWidth, x0 = 16, y0 = 16;
+  const pw = Math.min(220, W * 0.32), ph = pw * video.videoHeight / video.videoWidth, x0 = 14, y0 = 14;
   ctx.save();
   ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x0, y0, pw, ph, 12) : ctx.rect(x0, y0, pw, ph); ctx.clip();
-  ctx.globalAlpha = 0.85;
-  ctx.translate(x0 + pw, y0); ctx.scale(-1, 1);       // 镜像
-  ctx.drawImage(video, 0, 0, pw, ph);
+  ctx.globalAlpha = 0.9; ctx.translate(x0 + pw, y0); ctx.scale(-1, 1); ctx.drawImage(video, 0, 0, pw, ph);
   ctx.restore();
-  ctx.save();
-  ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.fillStyle = '#fff'; ctx.lineWidth = 1.2;
+  ctx.save(); ctx.strokeStyle = 'rgba(255,255,255,.9)'; ctx.fillStyle = '#fff'; ctx.lineWidth = 1.2;
   for (const lm of hands) {
     const pt = i => [x0 + (1 - lm[i].x) * pw, y0 + lm[i].y * ph];
-    ctx.beginPath();
-    for (const [a, b] of BONES) { const A = pt(a), B = pt(b); ctx.moveTo(...A); ctx.lineTo(...B); }
-    ctx.stroke();
+    ctx.beginPath(); for (const [a, b] of BONES) { ctx.moveTo(...pt(a)); ctx.lineTo(...pt(b)); } ctx.stroke();
     for (let i = 0; i < 21; i++) { const [x, y] = pt(i); ctx.beginPath(); ctx.arc(x, y, 2, 0, 6.28); ctx.fill(); }
   }
   ctx.restore();
 }
 
-function frame(now) {
-  // 1) 手势
-  if (landmarker && video.readyState >= 2 && video.currentTime !== lastVT) {
-    lastVT = video.currentTime;
-    hands = landmarker.detectForVideo(video, now).landmarks || [];
-    handleGesture(classify(hands));
-  }
-
-  // 2) 背景 + 雪
-  ctx.globalCompositeOperation = 'source-over';
-  ctx.globalAlpha = 1; ctx.fillStyle = '#05070a'; ctx.fillRect(0, 0, W, H);
-  ctx.fillStyle = '#fff';
-  for (const s of SNOW) {
-    s.y += s.v; s.s += 0.01; if (s.y > 1) { s.y = 0; s.x = Math.random(); }
-    ctx.globalAlpha = 0.25 + 0.25 * Math.sin(s.s * 3);
-    ctx.fillRect((s.x + Math.sin(s.s) * 0.01) * W, s.y * H, 1.4, 1.4);
-  }
-
-  // 3) 粒子
-  const t = now * 0.001, rot = t * 0.35, cs = Math.cos(rot), sn = Math.sin(rot);
-  const S = Math.min(W * 0.95, H * 0.58), cx = W / 2, cy = H * 0.5;
-  const fs = Math.max(8, Math.round(S / 55));
-  ctx.font = `${fs}px ui-monospace,Menlo,Consolas,monospace`;
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-
-  // 星星光晕
-  const starOn = P.some(p => p.kind === 'star' && p.active && Math.abs(p.y - p.fy) < 0.02);
-  if (stage >= 2 && starOn) {
-    const sx = cx, sy = cy - STAR_Y * S, R = S * 0.22 * (0.9 + 0.1 * Math.sin(t * 3));
-    const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, R);
-    g.addColorStop(0, 'rgba(255,214,120,.45)'); g.addColorStop(1, 'rgba(255,214,120,0)');
-    ctx.globalAlpha = 1; ctx.fillStyle = g; ctx.fillRect(sx - R, sy - R, 2 * R, 2 * R);
-  }
-
-  const deerOn = stage >= 5;
-  for (const p of P) {
-    if (p.delay > 0) p.delay--;
-    else {
-      const k = 0.055;
-      const tx = p.active ? p.fx : p.hx, ty = p.active ? p.fy : p.hy, tz = p.active ? p.fz : p.hz;
-      p.x += (tx - p.x) * k; p.y += (ty - p.y) * k; p.z += (tz - p.z) * k;
-    }
-    let xr = p.x, zr = p.z;
-    if (!p.bill) { xr = p.x * cs + p.z * sn; zr = -p.x * sn + p.z * cs; }
-    const f = 3 / (3 + zr);
-    const sx = cx + xr * S * f, sy = cy - p.y * S * f;
-    const depth = Math.min(1, Math.max(0, (0.6 - zr) / 1.2));
-    p.tw += 0.05;
-
-    let col, a, ch = p.ch;
-    if (!p.active) {                                   // 地面
-      col = '#8fa3ad'; a = 0.22 + 0.15 * depth; ch = p.gch;
-    } else if (p.kind === 'tree') {
-      if (stage >= 3 && p.light) {
-        col = `hsl(${(p.phi * 57 + p.h * 300 - t * 140) % 360 + 360},100%,62%)`; a = 0.95;
-      } else if (p.orn) {
-        col = p.ornCol; a = 0.6 + 0.4 * Math.sin(p.tw * 2);
-      } else {
-        col = `hsl(${p.hue},55%,${p.lit}%)`; a = 0.35 + 0.6 * depth;
-      }
-      // 驯鹿出现时，让它身后的树叶变暗，轮廓更清楚
-      if (deerOn && Math.abs(sx - cx) < DW * S * 0.62 && Math.abs(sy - (cy - DEER_CY * S)) < DH * S * 0.62) a *= 0.25;
-    } else if (p.kind === 'trunk') { col = '#8d6e63'; a = 0.8; }
-    else if (p.kind === 'star') { col = p.ray ? '#fff3c4' : '#ffd54f'; a = p.ray ? 0.4 + 0.4 * Math.sin(p.tw * 3) : 1; }
-    else if (p.kind === 'gift') { col = p.col; a = 0.95; }
-    else if (p.kind === 'deer') { col = '#ffffff'; a = 0.8 + 0.2 * Math.sin(p.tw); }
-
-    ctx.globalAlpha = Math.max(0, Math.min(1, a));
-    ctx.fillStyle = col;
-    ctx.fillText(ch, sx, sy);
-  }
-
-  // 4) 摄像头小窗 + 手部骨架
-  ctx.globalAlpha = 1;
-  drawCam();
-  requestAnimationFrame(frame);
-}
+addEventListener('resize', resize); resize();
 requestAnimationFrame(frame);
 </script>
 </body>
