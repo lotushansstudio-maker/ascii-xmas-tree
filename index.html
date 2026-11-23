@@ -274,25 +274,106 @@ function approach(key, target, upS, downS, dt) {
 /* ---------------- 手势 ---------------- */
 const video = document.getElementById('cam');
 let landmarker = null, hands = [], lastVT = -1, cand = null, candN = 0;
+/* ---- 手势模型加载：国内镜像优先，失败自动换源，并校验文件 ----
+   运行库：npmmirror（阿里云 npm 镜像，官方包原样）→ 本仓库 mp/
+   模型：两个国内 jsDelivr 镜像 → 本仓库 mp/，下载后校验 SHA-256 与 Google 官方文件一致 */
+const LOCAL = new URL('mp/', location.href).href;
+const RT_SOURCES = [['国内镜像', 'https://registry.npmmirror.com/@mediapipe/tasks-vision/0.10.14/files/'], ['GitHub', LOCAL]];
+const MODEL_SHA = 'fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1';
+const MODEL_SOURCES = [
+  ['国内镜像 A', 'https://cdn.jsdmirror.com/npm/ptmaker-vision-models@1.0.0/hand_landmarker.task'],
+  ['国内镜像 B', 'https://jsd.onmicrosoft.cn/npm/ptmaker-vision-models@1.0.0/hand_landmarker.task'],
+  ['GitHub', LOCAL + 'hand_landmarker.task'],
+];
+const ST = { rt: '', model: '' };
+const showSt = () => { statusEl.textContent = [ST.rt, ST.model].filter(Boolean).join(' · '); };
+const withTimeout = (p, ms, what) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(what + '超时')), ms))]);
+function probe(url, init) {                    // 能连上就算成功，不下载完整文件
+  const c = new AbortController(), id = setTimeout(() => c.abort(), 7000);
+  return fetch(url, { ...init, signal: c.signal }).then(r => { clearTimeout(id); if (!r.ok) throw 0; r.body && r.body.cancel(); });
+}
+function fastestFirst(list, urlOf, init) {     // 谁先响应排第一，其余保持原顺序
+  return new Promise(res => {
+    let fails = 0, done = false;
+    list.forEach(item => probe(urlOf(item), init).then(() => {
+      if (!done) { done = true; res([item, ...list.filter(x => x !== item)]); }
+    }).catch(() => { if (++fails === list.length && !done) res(list); }));
+  });
+}
+async function download(url, onP) {             // 带进度；15 秒没有新数据就放弃
+  const c = new AbortController(); let timer;
+  const kick = () => { clearTimeout(timer); timer = setTimeout(() => c.abort(), 15000); };
+  kick();
+  try {
+    const r = await fetch(url, { signal: c.signal });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const total = +r.headers.get('content-length') || 7819105;
+    const reader = r.body.getReader(), chunks = []; let got = 0;
+    for (;;) {
+      const { done, value } = await reader.read(); if (done) break;
+      chunks.push(value); got += value.length; kick(); onP(Math.min(99, got / total * 100 | 0));
+    }
+    const out = new Uint8Array(got); let o = 0; for (const ch of chunks) { out.set(ch, o); o += ch.length; }
+    return out;
+  } finally { clearTimeout(timer); }
+}
+async function loadModel() {
+  const order = await fastestFirst(MODEL_SOURCES, s => s[1], { headers: { Range: 'bytes=0-1023' } });
+  let err;
+  for (const [name, url] of order) {
+    try {
+      const buf = await download(url, p => { ST.model = `下载手势模型 ${p}%（${name}）`; showSt(); });
+      if (crypto.subtle) {
+        const hex = [...new Uint8Array(await crypto.subtle.digest('SHA-256', buf))].map(b => b.toString(16).padStart(2, '0')).join('');
+        if (hex !== MODEL_SHA) throw new Error('文件校验不一致');
+      }
+      ST.model = '模型就绪'; showSt();
+      return buf;
+    } catch (e) { err = e; console.warn('模型源失败', name, e); }
+  }
+  throw new Error('模型下载失败：' + (err && err.message || err));
+}
+async function loadRuntime(modelP) {
+  const order = await fastestFirst(RT_SOURCES, s => s[1] + 'wasm/vision_wasm_internal.js');
+  let err;
+  for (const [name, base] of order) {
+    try {
+      ST.rt = `加载运行库（${name}）…`; showSt();
+      const { FilesetResolver, HandLandmarker } = await withTimeout(import(base + 'vision_bundle.mjs'), 25000, '运行库');
+      const fileset = await FilesetResolver.forVisionTasks(base + 'wasm');
+      const model = await modelP;
+      ST.rt = `启动识别（${name}）…`; showSt();
+      const make = delegate => withTimeout(HandLandmarker.createFromOptions(fileset, {
+        baseOptions: { modelAssetBuffer: model.slice(), delegate }, runningMode: 'VIDEO', numHands: 1
+      }), 90000, '识别启动');
+      try { return await make('GPU'); } catch (e) { console.warn('GPU 不可用，改用 CPU', e); return await make('CPU'); }
+    } catch (e) { err = e; console.warn('运行库源失败', name, e); if (String(e.message).startsWith('模型')) throw e; }
+  }
+  throw new Error('运行库加载失败：' + (err && err.message || err));
+}
+
 document.getElementById('go').onclick = async () => {
   document.getElementById('start').style.display = 'none';
-  statusEl.textContent = '正在加载手势模型…';
+  statusEl.textContent = '正在打开摄像头…';
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: 640, height: 480 } });
     video.srcObject = stream; await video.play();
-    // 手势模型和运行库都放在仓库里（mp/），不依赖 Google / jsDelivr，在中国大陆也能加载
-    const base = new URL('mp/', location.href).href;
-    const { FilesetResolver, HandLandmarker } = await import(base + 'vision_bundle.mjs');
-    const fileset = await FilesetResolver.forVisionTasks(base + 'wasm');
-    const make = delegate => HandLandmarker.createFromOptions(fileset, {
-      baseOptions: { modelAssetPath: base + 'hand_landmarker.task', delegate },
-      runningMode: 'VIDEO', numHands: 2
-    });
-    try { landmarker = await make('GPU'); } catch (e) { console.warn('GPU 不可用，改用 CPU', e); landmarker = await make('CPU'); }
-    statusEl.textContent = '准备好了，举起手吧 🖐';
-  } catch (err) {
-    console.error(err);
-    statusEl.textContent = '摄像头不可用：点屏幕或按 0–5 体验';
+  } catch (e) {
+    console.error(e);
+    statusEl.textContent = e && e.name === 'NotAllowedError'
+      ? '没有允许使用摄像头：可在浏览器设置里打开，或点屏幕体验'
+      : `打不开摄像头（${e && e.name || e}）：点屏幕也能玩`;
+    return;
+  }
+  try {
+    const modelP = loadModel();
+    modelP.catch(() => {});
+    landmarker = await loadRuntime(modelP);
+    ST.rt = ''; ST.model = '';
+    statusEl.textContent = '准备好了，举起一只手吧 🖐';
+  } catch (e) {
+    console.error(e);
+    statusEl.textContent = `手势加载失败（${e.message || e}）：点屏幕也能玩`;
   }
 };
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
